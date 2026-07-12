@@ -68,3 +68,21 @@ def test_config_written_once_then_preserved(tmp_path):
     (tmp_path / ".factory/config.yaml").write_text("version: 1\nedited: true\n")
     assert fi.install_config(payload, tmp_path) is False        # not clobbered
     assert "edited: true" in (tmp_path / ".factory/config.yaml").read_text()
+
+def test_apply_block_create_and_idempotent():
+    once = fi.apply_managed_block(None, "HELLO")
+    assert fi.MARK_START in once and "HELLO" in once and fi.MARK_END in once
+    twice = fi.apply_managed_block(once, "HELLO")
+    assert twice == once                                  # idempotent
+
+def test_apply_block_preserves_outside_text():
+    existing = "# My repo\n\n" + fi.apply_managed_block(None, "OLD") + "\n\nfooter\n"
+    updated = fi.apply_managed_block(existing, "NEW")
+    assert "# My repo" in updated and "footer" in updated
+    assert "NEW" in updated and "OLD" not in updated
+
+def test_write_routers(tmp_path):
+    fi.write_routers(tmp_path)
+    agents = (tmp_path / "AGENTS.md").read_text()
+    assert "wo-execute" in agents and fi.MARK_START in agents
+    assert "@AGENTS.md" in (tmp_path / "CLAUDE.md").read_text()

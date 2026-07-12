@@ -1,6 +1,6 @@
 """Bootstrap/upgrade the Vinxi factory harness in a target repo. Stdlib only."""
 from __future__ import annotations
-import hashlib, json, os, pathlib, shutil
+import hashlib, json, os, pathlib, re, shutil
 
 BANNER_TEXT = (
     "MANAGED BY vinxi-factory — do not hand-edit. "
@@ -96,3 +96,38 @@ def install_config(payload_root, target_root) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text((payload_root / "config.yaml").read_text())
     return True
+
+MARK_START = "<!-- vinxi-factory:managed:start -->"
+MARK_END = "<!-- vinxi-factory:managed:end -->"
+
+ROUTER_BLOCK = """# AGENTS.md — Router
+
+This repository runs the **Vinxi software factory**. All delivery work runs
+through a Work Order under `.factory/work-orders/`. Pure `docs/` edits are exempt.
+
+- Author new work: invoke the `wo-author` skill.
+- Execute work: invoke the `wo-execute` skill (`/wo-execute WO-<id>`).
+- Reviews / sweeps / autonomous runs: `wo-review`, `factory-sweep`, `night-shift`, `factory-learn`.
+- Lifecycle, gates, risk tiers, precedence: `.factory/README.md` — the operating manual.
+
+Deterministic tools live in `tools/agent/` (all support `--help`; exit codes are gates).
+Never create competing artifacts (`spec.md`, `design.md`, `tasks.md`). The canonical
+artifact set is defined in `.factory/README.md`.
+"""
+
+CLAUDE_BLOCK = "# CLAUDE.md\n\nRead and follow @AGENTS.md — it is the router for this repository.\n"
+
+def apply_managed_block(existing, block: str) -> str:
+    marked = f"{MARK_START}\n{block.rstrip()}\n{MARK_END}"
+    if not existing:
+        return marked + "\n"
+    pattern = re.compile(re.escape(MARK_START) + r".*?" + re.escape(MARK_END), re.DOTALL)
+    if pattern.search(existing):
+        return pattern.sub(marked, existing)
+    return existing.rstrip() + "\n\n" + marked + "\n"
+
+def write_routers(target_root) -> None:
+    for name, block in (("AGENTS.md", ROUTER_BLOCK), ("CLAUDE.md", CLAUDE_BLOCK)):
+        p = target_root / name
+        existing = p.read_text() if p.exists() else None
+        p.write_text(apply_managed_block(existing, block))
