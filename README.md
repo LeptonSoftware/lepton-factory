@@ -27,9 +27,11 @@ This copies the harness into your repo (`.factory/`, `tools/agent/`) and writes
 ```
 
 `--upgrade` re-copies managed files and preserves anything you edited (it reports
-those so you can move divergences into `.factory/overrides/`). Managed files
-(`.factory/README.md`, `.factory/policies/**`, `tools/agent/**`) carry a banner and
-should not be hand-edited. `.factory/config.yaml` is yours and is never overwritten.
+those so you can move divergences into `.factory/overrides/`). Managed files should
+not be hand-edited — `.factory/README.md` and `.factory/policies/**` carry a banner
+marking them as managed; `tools/agent/**` are managed too (tracked in the manifest
+and re-copied on `--upgrade`) but are not bannered so their shebangs stay intact.
+`.factory/config.yaml` is yours and is never overwritten.
 
 ## What you get
 
