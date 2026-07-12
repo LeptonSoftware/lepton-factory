@@ -55,3 +55,16 @@ def test_fresh_install_copies_and_stamps(tmp_path):
     import os; assert os.access(tool, os.X_OK)               # exec bit preserved
     assert ".factory/README.md" in report["written"]
     assert report["manifest"][".factory/README.md"] == fi.sha256_text(readme)
+
+def test_state_dirs_created(tmp_path):
+    fi.ensure_state_dirs(tmp_path)
+    for d in ["work-orders","feedback","indexes","overrides"]:
+        assert (tmp_path / ".factory" / d / ".gitkeep").is_file()
+
+def test_config_written_once_then_preserved(tmp_path):
+    payload = tmp_path / "payload"; payload.mkdir()
+    (payload / "config.yaml").write_text("version: 1\n")
+    assert fi.install_config(payload, tmp_path) is True
+    (tmp_path / ".factory/config.yaml").write_text("version: 1\nedited: true\n")
+    assert fi.install_config(payload, tmp_path) is False        # not clobbered
+    assert "edited: true" in (tmp_path / ".factory/config.yaml").read_text()

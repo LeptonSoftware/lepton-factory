@@ -77,3 +77,22 @@ def copy_payload(payload_root, target_root, *, upgrade: bool) -> dict:
         written.append(dst_rel)
         manifest[dst_rel] = new_sha
     return {"written": written, "skipped_edited": skipped, "manifest": manifest}
+
+STATE_DIRS = ["work-orders", "feedback", "indexes", "overrides"]
+
+def ensure_state_dirs(target_root) -> list:
+    created = []
+    for d in STATE_DIRS:
+        p = target_root / ".factory" / d
+        p.mkdir(parents=True, exist_ok=True)
+        (p / ".gitkeep").touch()
+        created.append(d)
+    return created
+
+def install_config(payload_root, target_root) -> bool:
+    dst = target_root / ".factory/config.yaml"
+    if dst.exists():
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text((payload_root / "config.yaml").read_text())
+    return True
