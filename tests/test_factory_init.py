@@ -81,6 +81,14 @@ def test_apply_block_preserves_outside_text():
     assert "# My repo" in updated and "footer" in updated
     assert "NEW" in updated and "OLD" not in updated
 
+def test_apply_block_handles_backslashes_in_block():
+    block = r"path C:\1\2 and \g<x>"
+    once = fi.apply_managed_block(None, block)
+    assert block in once
+    twice = fi.apply_managed_block(once, block)   # replace-path must not raise or corrupt
+    assert twice == once
+    assert block in twice
+
 def test_write_routers(tmp_path):
     fi.write_routers(tmp_path)
     agents = (tmp_path / "AGENTS.md").read_text()

@@ -117,13 +117,13 @@ artifact set is defined in `.factory/README.md`.
 
 CLAUDE_BLOCK = "# CLAUDE.md\n\nRead and follow @AGENTS.md — it is the router for this repository.\n"
 
-def apply_managed_block(existing, block: str) -> str:
+def apply_managed_block(existing: str | None, block: str) -> str:
     marked = f"{MARK_START}\n{block.rstrip()}\n{MARK_END}"
     if not existing:
         return marked + "\n"
     pattern = re.compile(re.escape(MARK_START) + r".*?" + re.escape(MARK_END), re.DOTALL)
     if pattern.search(existing):
-        return pattern.sub(marked, existing)
+        return pattern.sub(lambda m: marked, existing)
     return existing.rstrip() + "\n\n" + marked + "\n"
 
 def write_routers(target_root) -> None:
