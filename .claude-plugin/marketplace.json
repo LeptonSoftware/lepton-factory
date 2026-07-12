@@ -1,0 +1,11 @@
+{
+  "name": "vinxi-factory",
+  "owner": { "name": "Lepton Software" },
+  "plugins": [
+    {
+      "name": "vinxi-factory",
+      "source": "./",
+      "description": "Vinxi software-factory harness — install then run /factory-init."
+    }
+  ]
+}

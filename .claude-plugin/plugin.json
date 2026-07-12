@@ -1,0 +1,9 @@
+{
+  "name": "vinxi-factory",
+  "version": "0.1.0",
+  "description": "Vinxi software-factory harness: Work-Order lifecycle skills, governance policies, artifact templates, and deterministic tools, installable into any repo.",
+  "author": { "name": "Lepton Software" },
+  "skills": "./skills",
+  "commands": "./commands",
+  "hooks": "./hooks/hooks.json"
+}
