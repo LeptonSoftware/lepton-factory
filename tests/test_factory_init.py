@@ -94,3 +94,23 @@ def test_write_routers(tmp_path):
     agents = (tmp_path / "AGENTS.md").read_text()
     assert "wo-execute" in agents and fi.MARK_START in agents
     assert "@AGENTS.md" in (tmp_path / "CLAUDE.md").read_text()
+
+def test_run_fresh_then_upgrade_preserves_edits(tmp_path):
+    payload = _payload(tmp_path); (payload / "config.yaml").write_text("version: 1\n")
+    target = tmp_path / "repo"; target.mkdir()
+    s1 = fi.run(target, payload, upgrade=False)
+    assert s1["config_written"] is True
+    assert (target / ".factory/.factory-manifest.json").is_file()
+    # adopter edits a managed policy, then upgrades
+    pol = target / ".factory/policies/testing.md"
+    pol.write_text(pol.read_text() + "\n<!-- local tweak -->\n")
+    s2 = fi.run(target, payload, upgrade=True)
+    assert ".factory/policies/testing.md" in s2["skipped_edited"]
+    assert "local tweak" in pol.read_text()             # preserved
+    assert s2["config_written"] is False                # config never re-written
+
+def test_main_returns_zero(tmp_path):
+    payload = _payload(tmp_path); (payload / "config.yaml").write_text("version: 1\n")
+    target = tmp_path / "repo"; target.mkdir()
+    rc = fi.main(["--target", str(target), "--payload", str(payload)])
+    assert rc == 0 and (target / "AGENTS.md").is_file()

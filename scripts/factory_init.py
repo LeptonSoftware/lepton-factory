@@ -1,6 +1,6 @@
 """Bootstrap/upgrade the Vinxi factory harness in a target repo. Stdlib only."""
 from __future__ import annotations
-import hashlib, json, os, pathlib, re, shutil
+import argparse, hashlib, json, os, pathlib, re, shutil, sys
 
 BANNER_TEXT = (
     "MANAGED BY vinxi-factory — do not hand-edit. "
@@ -131,3 +131,38 @@ def write_routers(target_root) -> None:
         p = target_root / name
         existing = p.read_text() if p.exists() else None
         p.write_text(apply_managed_block(existing, block))
+
+def default_payload_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parent.parent / "factory"
+
+def run(target_root, payload_root, *, upgrade: bool) -> dict:
+    target_root = pathlib.Path(target_root); payload_root = pathlib.Path(payload_root)
+    report = copy_payload(payload_root, target_root, upgrade=upgrade)
+    ensure_state_dirs(target_root)
+    config_written = install_config(payload_root, target_root)
+    write_routers(target_root)
+    write_manifest(target_root, report["manifest"])
+    return {"written": report["written"], "skipped_edited": report["skipped_edited"],
+            "config_written": config_written, "upgrade": upgrade}
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="factory-init",
+        description="Bootstrap or upgrade the Vinxi factory harness in a repo.")
+    ap.add_argument("--target", default=".")
+    ap.add_argument("--payload", default=str(default_payload_root()))
+    ap.add_argument("--upgrade", action="store_true")
+    a = ap.parse_args(argv)
+    s = run(a.target, a.payload, upgrade=a.upgrade)
+    mode = "Upgraded" if a.upgrade else "Installed"
+    print(f"{mode} factory harness: {len(s['written'])} managed files written.")
+    if s["skipped_edited"]:
+        print("Preserved adopter-edited files (move divergences to .factory/overrides/):")
+        for f in s["skipped_edited"]:
+            print(f"  - {f}")
+    if s["config_written"]:
+        print("Wrote .factory/config.yaml (adopter-owned; edit freely).")
+    print("Next: run /wo-author to create your first Work Order.")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
