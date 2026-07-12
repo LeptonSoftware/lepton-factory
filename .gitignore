@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# SDD scratch (ledger, task briefs, review packages)
+.superpowers/
