@@ -20,3 +20,16 @@ def test_stamp_prepends_only_for_supported_types():
     assert md.startswith("<!--") and "# Title" in md
     py = fi.stamp("#!/usr/bin/env python3\n", "tools/agent/x")
     assert py == "#!/usr/bin/env python3\n"
+
+def test_manifest_roundtrip(tmp_path):
+    fi.write_manifest(tmp_path, {"b": "2", "a": "1"})
+    assert fi.read_manifest(tmp_path) == {"a": "1", "b": "2"}
+    raw = (tmp_path / ".factory/.factory-manifest.json").read_text()
+    assert raw.index('"a"') < raw.index('"b"')     # sorted
+
+def test_read_manifest_absent(tmp_path):
+    assert fi.read_manifest(tmp_path) == {}
+
+def test_sha_stable():
+    assert fi.sha256_text("x") == fi.sha256_text("x")
+    assert fi.sha256_text("x") != fi.sha256_text("y")
