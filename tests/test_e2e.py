@@ -14,6 +14,11 @@ def test_fresh_install_against_real_payload(tmp_path):
     exe = repo / "tools/agent/validate-work-order"
     assert exe.is_file() and os.access(exe, os.X_OK)
     assert not (exe.read_text().startswith("<!--"))        # tool not stamped
+    # tools/agent/README.md is a .md file but lives under the tools payload,
+    # which is do_stamp=False — it must NOT carry the managed banner.
+    tools_readme = repo / "tools/agent/README.md"
+    assert tools_readme.is_file()
+    assert not tools_readme.read_text().startswith("<!--")
     for d in ["work-orders","feedback","indexes","overrides"]:
         assert (repo / ".factory" / d / ".gitkeep").is_file()
     assert "wo-execute" in (repo / "AGENTS.md").read_text()
