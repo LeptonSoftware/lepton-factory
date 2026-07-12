@@ -33,3 +33,25 @@ def test_read_manifest_absent(tmp_path):
 def test_sha_stable():
     assert fi.sha256_text("x") == fi.sha256_text("x")
     assert fi.sha256_text("x") != fi.sha256_text("y")
+
+def _payload(tmp_path):
+    p = tmp_path / "payload"
+    (p / "policies").mkdir(parents=True)
+    (p / "tools").mkdir(parents=True)
+    (p / "README.md").write_text("# Manual\n")
+    (p / "policies" / "testing.md").write_text("# Testing\n")
+    tool = p / "tools" / "init-work-order"
+    tool.write_text("#!/usr/bin/env python3\nprint('x')\n")
+    tool.chmod(0o755)
+    return p
+
+def test_fresh_install_copies_and_stamps(tmp_path):
+    payload = _payload(tmp_path); target = tmp_path / "repo"; target.mkdir()
+    report = fi.copy_payload(payload, target, upgrade=False)
+    readme = (target / ".factory/README.md").read_text()
+    assert readme.startswith("<!--")                        # stamped
+    tool = target / "tools/agent/init-work-order"
+    assert tool.read_text().startswith("#!/usr/bin/env python3")  # NOT stamped
+    import os; assert os.access(tool, os.X_OK)               # exec bit preserved
+    assert ".factory/README.md" in report["written"]
+    assert report["manifest"][".factory/README.md"] == fi.sha256_text(readme)
