@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""check-drift — blueprint↔code drift gate.
+
+For every blueprint in .factory/config.yaml `blueprints:` whose owned paths are
+touched by the change, require ONE of:
+  (a) the blueprint's doc (docs/architecture/**/<BP-ID>.md) changed in the same
+      diff — architecture record updated with the code; or
+  (b) an explicit drift disposition line in the governing WO's work-order.md or
+      contract.md:  `drift-accepted: <BP-ID> — <reason> — follow-up WO-NNNN`
+      (material drift may merge only with an owner-visible reason and follow-up), or
+  (c) a no-change declaration:  `no-blueprint-change: <BP-ID> — <reason>`
+      (the change does not alter documented structure/contracts).
+
+Also runs a DOCS pass: any doc under docs/ whose front-matter `applies_to`
+globs match the changed paths, but which was not itself touched, gets a WARNING
+("update it or bump last_verified to confirm it still holds"). Warnings do not
+fail the gate (prose legitimately survives many code changes); --strict-docs
+turns them into failures.
+
+Exit 0 clean / 1 with the affected blueprints and the fix. This is the
+mechanical half of drift detection; requirement→blueprint and feedback→
+requirement drift remain review duties (factory-sweep).
+"""
+
+import argparse
+import glob as globmod
+import os
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import _lib  # noqa: E402
+
+
+def changed_paths(base):
+    root = _lib.repo_root()
+    out = subprocess.run(["git", "diff", "--name-only", "%s...HEAD" % base],
+                         cwd=root, capture_output=True, text=True)
+    paths = set(p for p in out.stdout.splitlines() if p.strip())
+    # include working tree + untracked (pre-commit use)
+    for cmd in (["git", "diff", "--name-only"],
+                ["git", "ls-files", "--others", "--exclude-standard"]):
+        r = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+        paths.update(p for p in r.stdout.splitlines() if p.strip())
+    return paths
+
+
+def bp_doc_paths(bp_id):
+    root = _lib.repo_root()
+    return [os.path.relpath(p, root) for p in
+            globmod.glob(os.path.join(root, "docs", "architecture", "**",
+                                      bp_id + ".md"), recursive=True)]
+
+
+def dispositions(wo_ids, cfg):
+    """Collect drift-accepted / no-blueprint-change declarations from WO records."""
+    out = {}
+    pat = re.compile(r"(drift-accepted|no-blueprint-change):\s*"
+                     r"(BP-(?:CONT|COMP|FEAT)-[A-Z0-9-]+)\s*[—-]\s*(.+)")
+    for wo in wo_ids:
+        for name in ("work-order.md", "contract.md"):
+            p = os.path.join(_lib.wo_dir(wo, cfg), name)
+            if not os.path.isfile(p):
+                continue
+            for line in _lib.strip_html_comments(_lib.read_text(p)).splitlines():
+                m = pat.search(line)
+                if m:
+                    out[m.group(2)] = (m.group(1), m.group(3).strip(), _lib.rel(p))
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="check-drift", description=__doc__.split("\n")[1])
+    ap.add_argument("--base", default="origin/main", help="git base ref (default origin/main)")
+    ap.add_argument("--wo", action="append", default=[], metavar="WO-NNNN",
+                    help="WO(s) whose records may carry drift dispositions; repeatable")
+    ap.add_argument("--strict-docs", action="store_true",
+                    help="treat stale-doc warnings as failures")
+    args = ap.parse_args()
+
+    cfg = _lib.load_config()
+    changed = changed_paths(args.base)
+    if not changed:
+        print("no changed paths against %s — nothing to check." % args.base)
+        return
+
+    disp = dispositions(args.wo, cfg)
+    problems = []
+    for bp_id, spec in (cfg.get("blueprints") or {}).items():
+        touched = sorted(p for p in changed
+                         for pat in (spec.get("paths") or [])
+                         if _lib.path_matches(p, pat))
+        if not touched:
+            continue
+        docs = bp_doc_paths(bp_id)
+        doc_updated = any(d in changed for d in docs)
+        if doc_updated:
+            continue
+        if bp_id in disp:
+            kind, reason, where = disp[bp_id]
+            if kind == "drift-accepted" and not re.search(r"WO-[0-9]{4}", reason):
+                problems.append(
+                    "%s: drift-accepted in %s has no follow-up WO — material drift "
+                    "merges only with a linked follow-up (add 'follow-up WO-NNNN')."
+                    % (bp_id, where))
+            continue
+        problems.append(
+            "%s: %d owned path(s) changed (%s%s) but %s is untouched and no "
+            "disposition is recorded — update the blueprint in this change, or add "
+            "'no-blueprint-change: %s — <reason>' (or 'drift-accepted: %s — <reason> "
+            "— follow-up WO-NNNN') to the WO's work-order.md."
+            % (bp_id, len(touched), ", ".join(touched[:3]),
+               "…" if len(touched) > 3 else "",
+               (docs[0] if docs else "its blueprint doc"), bp_id, bp_id))
+
+    # DOCS pass: front-matter applies_to vs changed paths
+    warnings = []
+    root = _lib.repo_root()
+    for doc in sorted(globmod.glob(os.path.join(root, "docs", "**", "*.md"),
+                                   recursive=True)):
+        rel = os.path.relpath(doc, root)
+        if rel.endswith(".generated.md") or rel in changed:
+            continue
+        fm, _ = _lib.parse_front_matter(_lib.read_text(doc))
+        globs = fm.get("applies_to") or []
+        if isinstance(globs, str):
+            globs = [globs]
+        hits = sorted(p for p in changed
+                      for g in globs if isinstance(g, str) and _lib.path_matches(p, g))
+        if hits:
+            warnings.append(
+                "%s: applies_to matches %d changed path(s) (%s%s) but the doc is "
+                "untouched (last_verified: %s) — update it, or bump last_verified to "
+                "confirm it still holds."
+                % (rel, len(hits), ", ".join(hits[:2]),
+                   "…" if len(hits) > 2 else "", fm.get("last_verified", "?")))
+
+    for w in warnings:
+        print("  WARN %s" % w)
+    if problems or (warnings and args.strict_docs):
+        print("FAIL drift — %d blueprint issue(s), %d doc warning(s)%s:"
+              % (len(problems), len(warnings),
+                 " (strict-docs)" if args.strict_docs and warnings else ""))
+        for p in problems:
+            print("  - %s" % p)
+        sys.exit(1)
+    print("OK drift — touched blueprint areas have updated docs or dispositions"
+          + ("; %d doc warning(s) above need disposition in review" % len(warnings)
+             if warnings else "."))
+
+
+if __name__ == "__main__":
+    main()

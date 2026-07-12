@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""agent-review — dispatch a review brief to an external agent runner.
+
+The cross-model review adapter (.factory/policies/model-routing.md): callers hand
+a self-contained brief file (composed per the reviewer skill's controlled-context
+rules) to a named runner without knowing each CLI's incantations. Reviews run
+read-only; the reviewer's report goes to stdout or --out, and the CALLER appends
+it to review-log.md — this tool never writes WO state.
+
+Usage:
+  agent-review --list
+  agent-review --runner codex --brief /tmp/brief.md [--out report.md] [--dry-run]
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import _lib  # noqa: E402
+
+# Runner registry: name -> (binary, argv builder). Add runners here; keep every
+# invocation non-interactive and read-only (reviewers never modify product code).
+RUNNERS = {
+    "codex": lambda prompt: ["codex", "exec", "--sandbox", "read-only", prompt],
+    "claude": lambda prompt: ["claude", "-p", "--permission-mode", "plan", prompt],
+}
+
+
+def available():
+    return {name: bool(shutil.which(RUNNERS_BIN[name])) for name in RUNNERS}
+
+
+RUNNERS_BIN = {"codex": "codex", "claude": "claude"}
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="agent-review",
+        description="Dispatch a self-contained review brief to an external agent "
+                    "runner (cross-model review, read-only).")
+    ap.add_argument("--list", action="store_true", help="show runners and availability")
+    ap.add_argument("--runner", choices=sorted(RUNNERS), help="which agent runs the review")
+    ap.add_argument("--brief", metavar="FILE", help="self-contained review brief (markdown)")
+    ap.add_argument("--out", metavar="FILE", help="write the report here (default: stdout)")
+    ap.add_argument("--dry-run", action="store_true", help="print the command, don't run it")
+    args = ap.parse_args()
+
+    if args.list:
+        for name, ok in sorted(available().items()):
+            print("%-8s %s" % (name, "available" if ok else "NOT INSTALLED"))
+        return
+
+    if not args.runner or not args.brief:
+        _lib.die("--runner and --brief are required (or use --list) — compose the "
+                 "brief per the reviewer skill's controlled-context rules first.")
+    if not os.path.isfile(args.brief):
+        _lib.die("brief file not found: %s — write the self-contained brief before "
+                 "dispatching." % args.brief)
+    if not shutil.which(RUNNERS_BIN[args.runner]):
+        _lib.die("runner '%s' is not installed on this machine — run agent-review "
+                 "--list for what is, or install it." % args.runner)
+
+    prompt = _lib.read_text(args.brief)
+    cmd = RUNNERS[args.runner](prompt)
+    if args.dry_run:
+        print("would run: %s  (prompt: %d chars from %s)"
+              % (" ".join(cmd[:-1] + ["<brief>"]), len(prompt), args.brief))
+        return
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    report = result.stdout
+    if result.returncode != 0:
+        _lib.die("runner '%s' exited %d: %s — fix the runner invocation or try "
+                 "another runner (agent-review --list)."
+                 % (args.runner, result.returncode, (result.stderr or "")[:500]))
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(report)
+        print("report written to %s (%d chars)" % (args.out, len(report)))
+    else:
+        print(report)
+
+
+if __name__ == "__main__":
+    main()

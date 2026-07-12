@@ -1,0 +1,530 @@
+#!/usr/bin/env python3
+"""validate-work-order — THE Work Order completion gate. CI runs this on every PR.
+
+Usage:
+  validate-work-order --wo WO-1042 [--strict] [--tier-override low|medium|high]
+  validate-work-order --all
+
+Staged validation (--wo): a WO whose status is BEFORE in_review gets a reduced
+structural check (required files exist, state.yaml parseable, no placeholder
+violations, checklist syntax valid — unchecked items/verdict/gates NOT yet
+required) and exits 0 with a notice. --strict forces the full completion gate
+regardless of status.
+
+Full completion gate checks (each failure line names the fix; exit 0/1):
+- WO dir has all required files: work-order.md, context.md, contract.md,
+  implementation-plan.md, checklist.md, review-log.md, state.yaml, events.jsonl
+  (and evidence/). At LOW tier (state.yaml risk_tier: low), context.md,
+  contract.md, and implementation-plan.md are OPTIONAL — not required to exist,
+  but still validated (placeholders etc.) when present.
+- No template placeholders remain outside HTML comments (WO-XXXX, <Outcome, ...).
+- Every checklist item is [x] or [SKIP] with a `Skip reason:` line.
+- work-order.md has the required sections ending in `## E2E Acceptance Tests`.
+- review-log.md: the APPROVED verdict must sit INSIDE the last `## Round`
+  section (bold `Verdict: **APPROVED**` accepted); a verdict-shaped line
+  outside any Round is a failure.
+- events.jsonl: valid JSON per line; ts/wo/event keys present; wo matches the
+  directory; timestamps non-decreasing (tools are the only writers).
+- state.yaml status is in_review or later.
+- Per-tier gates from .factory/config.yaml `gates:` are satisfied in state.yaml.
+  A gate the tier REQUIRES is satisfied by 'skipped' ONLY when state.yaml
+  records BOTH a skip_reasons entry AND a waiver_approvers entry (a human
+  waiver, recorded via update-state --gate X=skipped --skip-reason "..."
+  --approver "<human name>" — protocol: docs/runbooks/break-glass.md).
+  Agents cannot self-waive: update-state refuses 'skipped' without an approver.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import _lib  # noqa: E402
+
+EPILOG = """\
+Low tier: context.md, contract.md, and implementation-plan.md are OPTIONAL
+(not required to exist; still validated when present). All other tiers require
+the full file set.
+
+Waivers: a tier-required gate at 'skipped' passes ONLY when state.yaml records
+both skip_reasons.<gate> and waiver_approvers.<gate> (a HUMAN, via update-state
+--gate <gate>=skipped --skip-reason "..." --approver "<name>"; protocol:
+docs/runbooks/break-glass.md).
+
+--all (CI mode): WOs at in_review or approved get the FULL completion gate.
+WOs at merged/released are historical records: only state.yaml parseability and
+events.jsonl integrity are checked — they are NOT re-validated against the
+current config's gate lists (config evolution must not retro-fail completed
+work). An unparseable or non-mapping state.yaml in --all mode is a validation
+FAILURE, never a skip. Scratch WOs (numbered >= .factory/config.yaml
+ids.scratch_min) are excluded from --all.
+"""
+
+REQUIRED_FILES = ["work-order.md", "context.md", "contract.md",
+                  "implementation-plan.md", "checklist.md", "review-log.md",
+                  "state.yaml", "events.jsonl"]
+
+# At LOW tier these become optional: not required to exist, still validated
+# (placeholder/section checks) when present. Everything else stays required.
+LOW_TIER_OPTIONAL_FILES = {"context.md", "contract.md", "implementation-plan.md"}
+
+REQUIRED_WO_SECTIONS = ["## Summary", "## In Scope", "## Out of Scope",
+                        "## Requirements", "## Blueprints",
+                        "## Decision classification",
+                        "## E2E Acceptance Tests"]
+
+PLACEHOLDER_TOKENS = ["WO-XXXX", "<Outcome", "REQ-AREA-", "AC-AREA-", "COV-AREA-",
+                      "BP-FEAT-<NAME>", "BP-COMP-<NAME>", "<feature>"]
+
+VERDICT_RE = re.compile(
+    r"^\s*(?:\*\*)?(?:Verdict:\s*)?(?:\*\*)?(APPROVED|CHANGES_REQUESTED)"
+    r"(?:\*\*)?\s*$")
+ROUND_RE = re.compile(r"^##\s+Round\b", re.IGNORECASE)
+ITEM_RE = re.compile(r"^\s*- \[([^\]]*)\]")
+
+
+def check_placeholders(wo_path, errors):
+    for name in sorted(os.listdir(wo_path)):
+        if not name.endswith(".md"):
+            continue
+        text = _lib.strip_html_comments(_lib.read_text(os.path.join(wo_path, name)))
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for token in PLACEHOLDER_TOKENS:
+                if token in line:
+                    errors.append(
+                        "%s:%d: template placeholder '%s' remains — replace it with "
+                        "real content (placeholders are only allowed inside HTML "
+                        "comments)." % (name, lineno, token))
+
+
+def check_checklist(wo_path, errors, require_resolved=True):
+    """Checklist syntax is always checked; unchecked items only fail when
+    require_resolved (the full completion gate)."""
+    path = os.path.join(wo_path, "checklist.md")
+    if not os.path.isfile(path):
+        return
+    lines = _lib.read_text(path).splitlines()
+    phase = "(before first phase heading)"
+    unchecked = {}
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("## "):
+            phase = line[3:].strip()
+        m = ITEM_RE.match(line)
+        if m:
+            mark = m.group(1)
+            if mark.strip() == "":
+                unchecked.setdefault(phase, []).append(i + 1)
+            elif mark == "x" or mark == "X":
+                pass
+            elif mark == "SKIP":
+                # `Skip reason:` must appear on a following line before the
+                # next item or heading.
+                j = i + 1
+                has_reason = False
+                while j < len(lines) and not ITEM_RE.match(lines[j]) \
+                        and not lines[j].startswith("#"):
+                    if "Skip reason:" in lines[j] and \
+                            lines[j].split("Skip reason:", 1)[1].strip():
+                        has_reason = True
+                        break
+                    j += 1
+                if not has_reason:
+                    errors.append(
+                        "checklist.md:%d: [SKIP] item has no 'Skip reason:' line — "
+                        "add 'Skip reason: <why>' on the next line." % (i + 1))
+            else:
+                errors.append(
+                    "checklist.md:%d: item marker '[%s]' is invalid — use [x] or "
+                    "[SKIP] with a 'Skip reason:' line." % (i + 1, mark))
+        i += 1
+    if require_resolved:
+        for ph, nums in unchecked.items():
+            errors.append(
+                "checklist.md: %d unchecked item(s) in '%s' (line %s) — complete them "
+                "([x]) or mark [SKIP] with a 'Skip reason:' line."
+                % (len(nums), ph, ", ".join(str(n) for n in nums)))
+
+
+def check_work_order_md(wo_path, errors):
+    path = os.path.join(wo_path, "work-order.md")
+    if not os.path.isfile(path):
+        return
+    text = _lib.strip_html_comments(_lib.read_text(path))
+    headings = [l.strip() for l in text.splitlines() if l.startswith("## ")]
+    for section in REQUIRED_WO_SECTIONS:
+        if section not in headings:
+            errors.append(
+                "work-order.md: missing required section '%s' — add it (required "
+                "sections: %s)."
+                % (section, ", ".join(REQUIRED_WO_SECTIONS)))
+    if headings and headings[-1] != "## E2E Acceptance Tests":
+        errors.append(
+            "work-order.md: the last '##' section is '%s' but must be "
+            "'## E2E Acceptance Tests' — move trailing sections above it."
+            % headings[-1])
+
+
+def check_review_log(wo_path, errors):
+    """The APPROVED verdict must sit inside the LAST `## Round` section.
+    Verdict-shaped lines outside any Round are failures (an appended bare
+    verdict must not flip the gate)."""
+    path = os.path.join(wo_path, "review-log.md")
+    if not os.path.isfile(path):
+        return
+    text = _lib.strip_html_comments(_lib.read_text(path))
+    rounds = []  # one list of verdicts per `## Round` section, in order
+    in_round = False
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if line.startswith("## "):
+            in_round = bool(ROUND_RE.match(line))
+            if in_round:
+                rounds.append([])
+            continue
+        m = VERDICT_RE.match(line)
+        if not m:
+            continue
+        if in_round:
+            rounds[-1].append(m.group(1))
+        else:
+            errors.append(
+                "review-log.md:%d: verdict-shaped line '%s' outside any '## Round' "
+                "section — verdicts only count inside the round that produced "
+                "them; move it into its round or remove it." % (lineno, m.group(1)))
+    if not rounds or not any(rounds):
+        errors.append(
+            "review-log.md: no verdict recorded inside a '## Round' section — an "
+            "independent reviewer must run a full round and record its verdict "
+            "(APPROVED or CHANGES_REQUESTED) inside that round.")
+        return
+    for i, r in enumerate(rounds, 1):
+        if len(r) > 1:
+            errors.append(
+                "review-log.md: Round %d contains %d verdict lines — exactly one "
+                "verdict per round; a verdict is only changed by appending a "
+                "fresh complete round, never by adding lines to a closed one."
+                % (i, len(r)))
+    last = rounds[-1]
+    if not last:
+        errors.append(
+            "review-log.md: the last '## Round' section has no verdict — the "
+            "reviewer records APPROVED or CHANGES_REQUESTED inside their round "
+            "(earlier rounds' verdicts do not carry forward).")
+    elif len(last) == 1 and last[0] != "APPROVED":
+        errors.append(
+            "review-log.md: the last round's verdict is CHANGES_REQUESTED — repair "
+            "the findings, return to in_progress, and obtain a fresh APPROVED "
+            "round (append-only).")
+
+
+def check_events(wo_id, wo_path, errors):
+    """Schema check: valid JSON per line, required keys ts/wo/event, wo matching
+    the directory, non-decreasing timestamps. Tools are the ONLY writers of
+    events.jsonl (taxonomy: _lib.append_event) — hand-written events are a
+    defect."""
+    path = os.path.join(wo_path, "events.jsonl")
+    if not os.path.isfile(path):
+        return
+    prev_ts = None
+    for lineno, line in enumerate(_lib.read_text(path).splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            errors.append(
+                "events.jsonl:%d: not valid JSON — events are appended only by "
+                "tools/agent scripts (taxonomy in _lib.append_event); repair the "
+                "line to valid JSON." % lineno)
+            continue
+        if not isinstance(ev, dict):
+            errors.append(
+                "events.jsonl:%d: not a JSON object — every event is "
+                "{ts, wo, event, ...}; repair the line." % lineno)
+            continue
+        missing = [k for k in ("ts", "wo", "event") if k not in ev]
+        if missing:
+            errors.append(
+                "events.jsonl:%d: missing required key(s) %s — every event needs "
+                "ts, wo, and event (tools are the only writers; hand-written "
+                "events are a defect — re-record via tools/agent/update-state)."
+                % (lineno, ", ".join(missing)))
+        if "wo" in ev and ev.get("wo") != wo_id:
+            errors.append(
+                "events.jsonl:%d: wo is '%s' but the directory is %s — fix the wo "
+                "field (an event belongs to the WO whose directory holds it)."
+                % (lineno, ev.get("wo"), wo_id))
+        ts = ev.get("ts")
+        if isinstance(ts, str) and ts:
+            if prev_ts is not None and ts < prev_ts:
+                errors.append(
+                    "events.jsonl:%d: timestamp %s decreases from the previous %s — "
+                    "the log is append-only and chronological; do not hand-write or "
+                    "reorder events (append a corrective event instead of rewriting "
+                    "history)." % (lineno, ts, prev_ts))
+            if prev_ts is None or ts > prev_ts:
+                prev_ts = ts
+
+
+def probe_state(wo_path):
+    """Returns (state_dict_or_None, error_or_None)."""
+    path = os.path.join(wo_path, "state.yaml")
+    if not os.path.isfile(path):
+        return None, None  # missing file is reported by the required-files check
+    try:
+        state = _lib.parse_yaml(_lib.read_text(path))
+    except ValueError as e:
+        return None, ("state.yaml: unparseable (%s) — repair it to match "
+                      ".factory/templates/state.yaml." % e)
+    if not isinstance(state, dict):
+        return None, ("state.yaml: not a mapping — repair it to match "
+                      ".factory/templates/state.yaml.")
+    return state, None
+
+
+def check_state_and_gates(wo_id, state, cfg, tier_override, errors):
+    if state.get("work_order") != wo_id:
+        errors.append("state.yaml: work_order is '%s' but the directory is %s — "
+                      "fix the work_order field." % (state.get("work_order"), wo_id))
+
+    status = state.get("status")
+    if status not in _lib.ALL_STATUSES:
+        errors.append("state.yaml: status '%s' is not a lifecycle state — set one "
+                      "of: %s." % (status, "|".join(_lib.ALL_STATUSES)))
+    elif status not in _lib.DONE_STATUSES:
+        errors.append(
+            "state.yaml: status is '%s' but the completion gate requires in_review "
+            "or later — finish execution and run tools/agent/update-state --wo %s "
+            "--status in_review." % (status, wo_id))
+
+    gates = state.get("gates") or {}
+    skip_reasons = state.get("skip_reasons") or {}
+    waivers = state.get("waiver_approvers") or {}
+    if not isinstance(gates, dict):
+        errors.append("state.yaml: gates is not a mapping — repair it to match "
+                      ".factory/templates/state.yaml.")
+        return
+    if not isinstance(skip_reasons, dict):
+        skip_reasons = {}
+    if not isinstance(waivers, dict):
+        waivers = {}
+
+    # Every skipped gate needs a skip_reasons entry (any tier).
+    for name, value in gates.items():
+        if value == "skipped" and not skip_reasons.get(name):
+            errors.append(
+                "state.yaml: gate %s is 'skipped' with no skip_reasons entry — "
+                "re-record it via tools/agent/update-state --wo %s --gate "
+                "%s=skipped --skip-reason \"<why>\"." % (name, wo_id, name))
+
+    recorded = state.get("risk_tier")
+    tier = recorded
+    if tier_override:
+        if recorded in _lib.TIERS and \
+                _lib.TIER_RANK[tier_override] < _lib.TIER_RANK[recorded]:
+            errors.append(
+                "--tier-override %s would LOWER the recorded risk_tier '%s' — "
+                "overrides may only RAISE the tier (validating against the "
+                "recorded tier instead; tiers are lowered by nobody)."
+                % (tier_override, recorded))
+        else:
+            tier = tier_override
+    if tier not in _lib.TIERS:
+        errors.append(
+            "state.yaml: risk_tier '%s' is invalid — run tools/agent/risk-tier "
+            "--wo %s --write." % (tier, wo_id))
+        return
+
+    required = cfg.get("gates", {}).get(tier) or []
+    for cfg_gate in required:
+        field = _lib.CONFIG_GATE_TO_FIELD.get(cfg_gate, "__unknown__")
+        if field is None:  # 'validate' — satisfied by running this script
+            continue
+        if field == "__unknown__":
+            errors.append(
+                ".factory/config.yaml: gate name '%s' (tier %s) has no state.yaml "
+                "mapping — add it to CONFIG_GATE_TO_FIELD in tools/agent/_lib.py "
+                "or fix the config." % (cfg_gate, tier))
+            continue
+        value = gates.get(field, "pending")
+        if value in _lib.GATE_SATISFIED[field]:
+            continue
+        skill = _lib.GATE_SKILL.get(field, field)
+        if value == "skipped":
+            if skip_reasons.get(field) and waivers.get(field):
+                # Human-waived: reason + approver recorded (break-glass protocol).
+                continue
+            errors.append(
+                "state.yaml: gate %s is required at tier %s and is 'skipped' "
+                "without a recorded human waiver — either run the gate (skill: "
+                "%s), or a HUMAN waives it via tools/agent/update-state --wo %s "
+                "--gate %s=skipped --skip-reason \"<why>\" --approver \"<their "
+                "name>\" (protocol: docs/runbooks/break-glass.md; agents cannot "
+                "self-waive)." % (field, tier, skill, wo_id, field))
+            continue
+        satisfying = "|".join(sorted(_lib.GATE_SATISFIED[field]))
+        if field == "human_approval":
+            errors.append(
+                "state.yaml: gate human_approval is '%s' but tier %s requires it — "
+                "obtain human approval — a human records it via "
+                "tools/agent/update-state --wo %s --gate human_approval=approved "
+                "--approver \"<their name>\"." % (value, tier, wo_id))
+        else:
+            errors.append(
+                "state.yaml: gate %s is '%s' but tier %s requires it (config gate "
+                "'%s') — run the gate (skill: %s), then record it via "
+                "tools/agent/update-state --wo %s --gate %s=<%s>."
+                % (field, value, tier, cfg_gate, skill, wo_id, field, satisfying))
+
+
+def validate(wo_id, cfg, tier_override=None, strict=False):
+    """Returns (errors, notice). notice is set (and errors empty) when the WO is
+    before in_review and the reduced structural check passed."""
+    errors = []
+    wo_path = _lib.wo_dir(wo_id, cfg)
+    if not os.path.isdir(wo_path):
+        return (["%s does not exist — run tools/agent/init-work-order --wo %s."
+                 % (_lib.rel(wo_path), wo_id)], None)
+
+    state, state_err = probe_state(wo_path)
+    status = state.get("status") if isinstance(state, dict) else None
+    tier = state.get("risk_tier") if isinstance(state, dict) else None
+
+    required_files = REQUIRED_FILES
+    if tier == "low":
+        # Low-tier floor: context/contract/plan are optional (still validated
+        # below when present).
+        required_files = [n for n in REQUIRED_FILES
+                          if n not in LOW_TIER_OPTIONAL_FILES]
+    for name in required_files:
+        if not os.path.isfile(os.path.join(wo_path, name)):
+            errors.append(
+                "missing %s — run tools/agent/init-work-order --wo %s (idempotent; "
+                "creates only what is missing)." % (name, wo_id))
+    if not os.path.isdir(os.path.join(wo_path, "evidence")):
+        errors.append(
+            "missing evidence/ directory — run tools/agent/init-work-order --wo %s."
+            % wo_id)
+    staged = (not strict and state is not None and status in _lib.ALL_STATUSES
+              and status not in _lib.DONE_STATUSES)
+
+    check_placeholders(wo_path, errors)
+    check_checklist(wo_path, errors, require_resolved=not staged)
+
+    if staged:
+        if errors:
+            return errors, None
+        return [], ("%s at status %s — structural check passed; completion gate "
+                    "applies from in_review (use --strict to force the full gate "
+                    "now)." % (wo_id, status))
+
+    # Full completion gate.
+    check_work_order_md(wo_path, errors)
+    check_review_log(wo_path, errors)
+    check_events(wo_id, wo_path, errors)
+    if state_err:
+        errors.append(state_err)
+    elif state is not None:
+        check_state_and_gates(wo_id, state, cfg, tier_override, errors)
+    return errors, None
+
+
+def report(wo_id, errors, notice=None):
+    if errors:
+        print("FAIL %s — %d issue(s):" % (wo_id, len(errors)))
+        for e in errors:
+            print("  - %s" % e)
+    elif notice:
+        print("OK %s" % notice)
+    else:
+        print("OK %s — completion gate passed." % wo_id)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="validate-work-order",
+        description="Work Order completion gate: files, placeholders, checklist, "
+                    "sections, review verdict, events integrity, lifecycle status, "
+                    "per-tier gates. Exit 0 pass / 1 fail; every failure names the "
+                    "fix. WOs before in_review get a reduced structural check "
+                    "unless --strict.",
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--wo", metavar="WO-NNNN", help="validate a single work order")
+    ap.add_argument("--all", action="store_true",
+                    help="CI mode: full gate for WOs at in_review/approved; "
+                         "parseability + events integrity for merged/released "
+                         "(see epilog); corrupt state.yaml = FAILURE")
+    ap.add_argument("--strict", action="store_true",
+                    help="force the full completion gate even before in_review")
+    ap.add_argument("--tier-override", choices=_lib.TIERS,
+                    help="validate against this tier instead of state.yaml "
+                         "risk_tier — may only RAISE relative to the recorded tier")
+    args = ap.parse_args()
+
+    if bool(args.wo) == bool(args.all):
+        ap.error("pass exactly one of --wo WO-NNNN or --all")
+
+    cfg = _lib.load_config()
+    if args.wo:
+        _lib.check_wo_id(args.wo, cfg)
+        errors, notice = validate(args.wo, cfg, args.tier_override,
+                                  strict=args.strict)
+        report(args.wo, errors, notice)
+        return 1 if errors else 0
+
+    # --all (scratch WOs excluded by list_wo_dirs)
+    failed = 0
+    checked = 0
+    for wo_id, wo_path in _lib.list_wo_dirs(cfg):
+        state_file = os.path.join(wo_path, "state.yaml")
+        if not os.path.isfile(state_file):
+            print("SKIP %s — no state.yaml yet (not initialized; not at the "
+                  "completion gate)." % wo_id)
+            continue
+        state, state_err = probe_state(wo_path)
+        if state_err:
+            checked += 1
+            failed += 1
+            report(wo_id, [state_err + " (a corrupt state.yaml is a validation "
+                           "FAILURE in --all mode, never a skip)"])
+            continue
+        status = state.get("status")
+        if status in ("merged", "released"):
+            # Historical record: parseability + events integrity only — not
+            # re-validated against the current config (see --help epilog).
+            errors = []
+            check_events(wo_id, wo_path, errors)
+            checked += 1
+            report(wo_id, errors,
+                   notice="%s — historical record (status %s): state parseable, "
+                          "events integrity checked; not re-validated against "
+                          "current config." % (wo_id, status))
+            if errors:
+                failed += 1
+        elif status in ("in_review", "approved"):
+            checked += 1
+            errors, _notice = validate(wo_id, cfg, args.tier_override, strict=True)
+            report(wo_id, errors)
+            if errors:
+                failed += 1
+        elif status in _lib.ALL_STATUSES:
+            print("SKIP %s — status '%s' (completion gate applies from in_review "
+                  "onward)." % (wo_id, status))
+        else:
+            checked += 1
+            failed += 1
+            report(wo_id, ["state.yaml: status '%s' is not a lifecycle state — "
+                           "set one of: %s (an invalid status is a validation "
+                           "FAILURE in --all mode, never a skip)."
+                           % (status, "|".join(_lib.ALL_STATUSES))])
+    if checked == 0:
+        print("no work orders at in_review or later — nothing to validate.")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

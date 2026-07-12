@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""check-traceability — verify the REQ/AC/BP/COV ID graph is consistent.
+
+Usage:
+  check-traceability            # repo-wide
+  check-traceability --wo WO-1042   # scoped to one work order's references
+
+Sources (paths and ID regexes come from .factory/config.yaml):
+- REQ/AC definitions: docs/product/features/**/requirements.md. An ID is
+  *defined* where it starts a line (after heading/list/bold markers); any
+  other occurrence is a reference.
+- BP definitions: docs/architecture/**/*.md (front-matter `id:`, a heading
+  whose first token is the ID, or a file named BP-*.md). Blueprints mapped in
+  .factory/config.yaml `blueprints:` count as known (ownership map) so a WO may
+  reference them before the blueprint doc lands — authoring the doc is still
+  expected.
+- References: .factory/work-orders/*/work-order.md (+ contract.md for COV rows).
+
+Checks (exit 0/1; every failure names the fix):
+- every REQ/AC/BP referenced by a WO exists;
+- every AC listed in a WO has a COV table row in that WO's work-order.md or
+  contract.md;
+- duplicate ID definitions are errors;
+- ID-shaped tokens that violate the config regexes are errors.
+HTML comments are ignored everywhere. Scratch WOs (numbered >=
+.factory/config.yaml ids.scratch_min) are excluded from repo-wide checks
+(pass --wo to check one explicitly).
+"""
+
+import argparse
+import glob
+import os
+import re
+import sys
+from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import _lib  # noqa: E402
+
+LOOSE_ID = re.compile(r"\b(REQ|AC|WO|COV|BP)-[A-Za-z0-9][A-Za-z0-9._-]*")
+DEF_LINE = re.compile(
+    r"^\s*(?:#{1,6}\s+)?(?:[-*+]\s+)?(?:\*\*)?\s*"
+    r"((?:REQ|AC)-[A-Za-z0-9._-]+)")
+
+
+def clean(path):
+    return _lib.strip_html_comments(_lib.read_text(path))
+
+
+def id_kind(token):
+    return token.split("-", 1)[0]
+
+
+def kind_regex(kind, regexes):
+    key = {"REQ": "requirement", "AC": "acceptance_criterion", "WO": "work_order",
+           "COV": "coverage", "BP": "blueprint"}[kind]
+    return regexes.get(key)
+
+
+_PLACEHOLDER = re.compile(r"XXXX|NNNN|NNN\b|<")
+
+
+def scan_format_violations(path, text, regexes, errors):
+    if os.path.basename(path) == "TEMPLATE.md":
+        return  # templates legitimately show the grammar, not real IDs
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for m in LOOSE_ID.finditer(line):
+            token = m.group(0)
+            for ext in (".md", ".yaml", ".yml", ".jsonl"):
+                if token.endswith(ext):  # filename reference (e.g. the feedback
+                    token = token[:-len(ext)]  # record WO-NNNN.yaml), not an ID
+                    break
+            token = token.rstrip("._-")
+            if _PLACEHOLDER.search(token):
+                continue  # grammar placeholder (WO-NNNN, REQ-XXXX-…)
+            if id_kind(token) == "BP" and token.count("-") < 2:
+                continue  # taxonomy prefix mention (BP-CONT, BP-COMP, BP-FEAT)
+            rx = kind_regex(id_kind(token), regexes)
+            if rx and not rx.fullmatch(token):
+                errors.append(
+                    "%s:%d: '%s' violates the %s ID format (%s in "
+                    ".factory/config.yaml ids:) — fix the ID."
+                    % (_lib.rel(path), lineno, token, id_kind(token), rx.pattern))
+
+
+def collect_definitions(cfg, regexes, errors):
+    root = _lib.repo_root()
+    req_defs = defaultdict(list)   # id -> [paths]
+    bp_defs = defaultdict(list)
+
+    req_glob = os.path.join(root, cfg["paths"]["requirements"], "**", "requirements.md")
+    for path in sorted(glob.glob(req_glob, recursive=True)):
+        text = clean(path)
+        scan_format_violations(path, text, regexes, errors)
+        seen_here = set()
+        for line in text.splitlines():
+            m = DEF_LINE.match(line)
+            if m:
+                token = m.group(1).rstrip("._-")
+                rx = kind_regex(id_kind(token), regexes)
+                if rx and rx.fullmatch(token) and token not in seen_here:
+                    seen_here.add(token)
+                    req_defs[token].append(path)
+
+    bp_glob = os.path.join(root, cfg["paths"]["blueprints"], "**", "*.md")
+    bp_rx = regexes.get("blueprint")
+    for path in sorted(glob.glob(bp_glob, recursive=True)):
+        raw = _lib.read_text(path)
+        fm, _body = _lib.parse_front_matter(raw)
+        text = _lib.strip_html_comments(raw)
+        scan_format_violations(path, text, regexes, errors)
+        seen_here = set()
+        fm_id = fm.get("id")
+        if isinstance(fm_id, str) and bp_rx and bp_rx.fullmatch(fm_id):
+            seen_here.add(fm_id)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if bp_rx and bp_rx.fullmatch(stem):
+            seen_here.add(stem)
+        for line in text.splitlines():
+            hm = re.match(r"^#{1,6}\s+(?:\*\*)?(BP-[A-Za-z0-9._-]+)", line)
+            if hm:
+                token = hm.group(1).rstrip("._-")
+                if bp_rx and bp_rx.fullmatch(token):
+                    seen_here.add(token)
+        for token in seen_here:
+            bp_defs[token].append(path)
+
+    for defs, label in ((req_defs, "requirements"), (bp_defs, "blueprint")):
+        for token, paths in sorted(defs.items()):
+            if len(paths) > 1:
+                errors.append(
+                    "%s is defined in %d %s files (%s) — an ID has exactly one "
+                    "authoritative definition; remove the duplicates."
+                    % (token, len(paths),
+                       label, ", ".join(_lib.rel(p) for p in paths)))
+
+    config_bps = set((cfg.get("blueprints") or {}).keys())
+    return req_defs, bp_defs, config_bps
+
+
+def check_wo(wo_id, wo_path, regexes, req_defs, bp_defs, config_bps, errors):
+    wo_md = os.path.join(wo_path, "work-order.md")
+    contract_md = os.path.join(wo_path, "contract.md")
+    if not os.path.isfile(wo_md):
+        errors.append("%s: work-order.md missing — author it (template in "
+                      ".factory/templates/) or run tools/agent/init-work-order "
+                      "--wo %s." % (wo_id, wo_id))
+        return
+    wo_text = clean(wo_md)
+    contract_text = clean(contract_md) if os.path.isfile(contract_md) else ""
+    scan_format_violations(wo_md, wo_text, regexes, errors)
+    if contract_text:
+        scan_format_violations(contract_md, contract_text, regexes, errors)
+
+    refs = defaultdict(set)
+    for text in (wo_text, contract_text):
+        for m in LOOSE_ID.finditer(text):
+            token = m.group(0).rstrip("._-")
+            rx = kind_regex(id_kind(token), regexes)
+            if rx and rx.fullmatch(token):
+                refs[id_kind(token)].add(token)
+
+    for token in sorted(refs["REQ"] | refs["AC"]):
+        if token not in req_defs:
+            errors.append(
+                "%s references %s but it is not defined in any "
+                "docs/product/features/**/requirements.md — author the "
+                "requirement (or fix the ID)." % (wo_id, token))
+    for token in sorted(refs["BP"]):
+        if token not in bp_defs and token not in config_bps:
+            errors.append(
+                "%s references %s but no blueprint defines it (docs/architecture/ "
+                "or .factory/config.yaml blueprints:) — author the blueprint or "
+                "fix the ID." % (wo_id, token))
+
+    # every AC listed in the WO needs a COV table row in work-order.md or contract.md
+    table_rows = [l for text in (wo_text, contract_text)
+                  for l in text.splitlines() if l.strip().startswith("|")]
+    for ac in sorted(refs["AC"]):
+        covered = any(ac in row and re.search(r"\bCOV-[A-Za-z0-9.-]+", row)
+                      for row in table_rows)
+        if not covered:
+            cov_id = "COV-" + ac.split("-", 1)[1]
+            errors.append(
+                "%s: %s has no COV row — add '| %s | %s | <proves> |' to the "
+                "E2E Acceptance Tests table in work-order.md (or the verification "
+                "contract in contract.md)." % (wo_id, ac, cov_id, ac))
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="check-traceability",
+        description="Verify the REQ/AC/BP/COV ID graph: references resolve, ACs "
+                    "have COV rows, no duplicate definitions, no ID format "
+                    "violations. Exit 0/1; failures name the fix.")
+    ap.add_argument("--wo", metavar="WO-NNNN",
+                    help="scope reference checks to one work order "
+                         "(definitions are still loaded repo-wide)")
+    args = ap.parse_args()
+
+    cfg = _lib.load_config()
+    regexes = _lib.id_regexes(cfg)
+    errors = []
+    req_defs, bp_defs, config_bps = collect_definitions(cfg, regexes, errors)
+
+    if args.wo:
+        _lib.check_wo_id(args.wo, cfg)
+        wo_path = _lib.wo_dir(args.wo, cfg)
+        if not os.path.isdir(wo_path):
+            _lib.die("%s does not exist — run tools/agent/init-work-order --wo %s "
+                     "or check the ID." % (_lib.rel(wo_path), args.wo))
+        wos = [(args.wo, wo_path)]
+    else:
+        wos = _lib.list_wo_dirs(cfg)
+
+    for wo_id, wo_path in wos:
+        check_wo(wo_id, wo_path, regexes, req_defs, bp_defs, config_bps, errors)
+
+    if errors:
+        print("FAIL traceability — %d issue(s):" % len(errors))
+        for e in errors:
+            print("  - %s" % e)
+        return 1
+    ac_count = sum(1 for t in req_defs if t.startswith("AC-"))
+    req_count = len(req_defs) - ac_count
+    print("OK traceability — %d REQ, %d AC, %d BP definition(s); %d work order(s) "
+          "checked." % (req_count, ac_count,
+                        len(set(bp_defs) | config_bps), len(wos)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

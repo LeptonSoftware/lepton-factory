@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""update-state — record a Work Order state checkpoint (state.yaml + events.jsonl).
+
+Usage:
+  update-state --wo WO-1042 [--status s] [--phase p] [--slice S02]
+               [--gate name=value]... [--skip-reason "..."] [--approver "..."]
+               [--next "..."] [--blocked "..."] [--plan-revision N] [--commit sha]
+               [--actor id]
+
+Rules enforced (exit nonzero, message names the next action):
+- status follows the lifecycle: ready→context→contract→planned→in_progress→
+  in_review→approved→merged→released; in_review→in_progress allowed
+  (changes requested).
+- blocked is reachable from any state EXCEPT merged/released (completed WOs
+  cannot be laundered back through blocked). Entering blocked records
+  blocked_from; resuming from blocked returns ONLY to blocked_from.
+- --status blocked requires --blocked <reason>; --blocked alone implies
+  --status blocked. Moving to a non-blocked status clears blocked_on/blocked_from.
+- --gate name=value validates the per-gate enum (see .factory/templates/state.yaml);
+  value 'skipped' requires BOTH --skip-reason (recorded in skip_reasons.<name>)
+  AND --approver "<human name>" (recorded in waiver_approvers.<name>). Waivers
+  are human acts — agents may not self-waive a gate. Protocol:
+  docs/runbooks/break-glass.md.
+- --gate human_approval=approved requires --approver "<name>" — a HUMAN records
+  this gate; the approver is written to state.yaml and events.jsonl.
+- Free-text values (--next/--blocked/--skip-reason/--approver/--actor) must be
+  single-line: embedded newlines would corrupt state.yaml and are rejected.
+- A state.yaml missing work_order or a valid status is treated as corrupted:
+  update-state refuses to operate until it is repaired (events.jsonl holds the
+  last checkpoint), instead of laundering the corruption into fresh state.
+Every successful invocation appends one JSON line to events.jsonl:
+  {ts, wo, actor, event: state.updated, changes: {field: {from, to}}}.
+"""
+
+import argparse
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import _lib  # noqa: E402
+
+
+def parse_gates(pairs):
+    out = []
+    for pair in pairs or []:
+        if "=" not in pair:
+            _lib.die("--gate expects name=value (e.g. --gate plan_challenge=approve); "
+                     "got '%s'." % pair)
+        name, value = pair.split("=", 1)
+        name, value = name.strip(), value.strip()
+        if name not in _lib.GATE_VALUES:
+            _lib.die("unknown gate '%s' — valid gates: %s."
+                     % (name, ", ".join(_lib.GATE_VALUES)))
+        if value not in _lib.GATE_VALUES[name]:
+            _lib.die("gate %s cannot be '%s' — valid values: %s."
+                     % (name, value, "|".join(_lib.GATE_VALUES[name])))
+        out.append((name, value))
+    return out
+
+
+def reject_multiline(flag, value):
+    if value and ("\n" in value or "\r" in value):
+        _lib.die("%s value contains a newline — state.yaml fields are single-line; "
+                 "condense it to one line (e.g. join steps with '; ') and re-run."
+                 % flag)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="update-state",
+        description="Update a Work Order's state.yaml and append the change to "
+                    "events.jsonl. Validates enums and lifecycle transitions.")
+    ap.add_argument("--wo", required=True, metavar="WO-NNNN", help="work order ID")
+    ap.add_argument("--status", choices=_lib.ALL_STATUSES,
+                    help="lifecycle status (must be a legal transition)")
+    ap.add_argument("--phase", choices=_lib.PHASES, help="current_phase")
+    ap.add_argument("--slice", dest="slice_", metavar="SNN",
+                    help="current_slice, e.g. S02")
+    ap.add_argument("--gate", action="append", metavar="NAME=VALUE",
+                    help="record a gate outcome; repeatable")
+    ap.add_argument("--skip-reason", metavar="TEXT",
+                    help="required when a --gate value is 'skipped'; recorded in "
+                         "skip_reasons (applies to every gate skipped in this call)")
+    ap.add_argument("--approver", metavar="NAME",
+                    help="the HUMAN authorizing the action. Required with --gate "
+                         "human_approval=approved AND with any --gate <name>=skipped "
+                         "(waivers are human acts — docs/runbooks/break-glass.md); "
+                         "written to state.yaml + events.jsonl")
+    ap.add_argument("--next", dest="next_", metavar="TEXT",
+                    help="next_action for the resuming agent (single line)")
+    ap.add_argument("--blocked", metavar="TEXT",
+                    help="blocker description; sets blocked_on (and status=blocked "
+                         "unless --status is also given)")
+    ap.add_argument("--plan-revision", type=int, metavar="N",
+                    help="plan_revision counter")
+    ap.add_argument("--commit", metavar="SHA", help="last_verified_commit")
+    ap.add_argument("--actor", metavar="ID",
+                    help="who is recording this checkpoint; written to every "
+                         "events.jsonl line (default: $USER + '/agent')")
+    args = ap.parse_args()
+
+    for flag, value in (("--next", args.next_), ("--blocked", args.blocked),
+                        ("--skip-reason", args.skip_reason),
+                        ("--approver", args.approver), ("--actor", args.actor)):
+        reject_multiline(flag, value)
+
+    cfg = _lib.load_config()
+    _lib.check_wo_id(args.wo, cfg)
+    state = _lib.load_state(args.wo, cfg)
+    _lib.require_intact_state(state, args.wo)
+    gates = parse_gates(args.gate)
+    actor = args.actor or _lib.default_actor()
+
+    if not any([args.status, args.phase, args.slice_, gates, args.next_,
+                args.blocked, args.plan_revision is not None, args.commit]):
+        _lib.die("nothing to update — pass at least one of --status/--phase/--slice/"
+                 "--gate/--next/--blocked/--plan-revision/--commit (see --help).")
+
+    changes = {}
+
+    def set_field(field, new):
+        old = state.get(field)
+        if field in ("gates", "skip_reasons"):
+            raise ValueError(field)
+        changes[field] = {"from": old, "to": new}
+        state[field] = new
+
+    # -- status / blocked -------------------------------------------------
+    new_status = args.status
+    if args.blocked and not new_status:
+        new_status = "blocked"
+    if new_status == "blocked" and not args.blocked and not state.get("blocked_on"):
+        _lib.die("status=blocked requires --blocked \"<reason>\" so the escalation "
+                 "has a recorded blocker.")
+    if new_status:
+        cur = state.get("status")
+        if new_status != cur:
+            allowed = _lib.allowed_next_statuses(cur, state.get("blocked_from"))
+            if cur == "blocked" and not allowed:
+                _lib.die("state.yaml is blocked with no valid blocked_from recorded "
+                         "— repair: set blocked_from to the status held when the WO "
+                         "was blocked (see the state.updated events in events.jsonl), "
+                         "then resume with update-state --wo %s --status <that "
+                         "status>." % args.wo)
+            if new_status == "blocked" and cur in ("merged", "released"):
+                _lib.die("cannot enter blocked from %s — completed WOs are immutable "
+                         "records and never re-enter the lifecycle; open a NEW work "
+                         "order for follow-up work." % cur)
+            if new_status not in allowed:
+                _lib.die("invalid transition %s → %s — allowed next: %s. Move through "
+                         "the lifecycle one step at a time (run update-state --wo %s "
+                         "--status <next>)."
+                         % (cur, new_status,
+                            ", ".join(sorted(allowed)) or "(none)", args.wo))
+            if new_status == "blocked":
+                set_field("blocked_from", cur)
+            elif cur == "blocked" and state.get("blocked_from") is not None:
+                set_field("blocked_from", None)
+            set_field("status", new_status)
+        if new_status != "blocked" and state.get("blocked_on") and not args.blocked:
+            set_field("blocked_on", None)
+
+    if args.blocked:
+        set_field("blocked_on", args.blocked)
+
+    # -- simple fields -----------------------------------------------------
+    if args.phase:
+        set_field("current_phase", args.phase)
+    if args.slice_:
+        if not re.fullmatch(r"S[0-9]{2,}", args.slice_):
+            _lib.die("--slice must look like S02 (S + 2+ digits); got '%s'."
+                     % args.slice_)
+        set_field("current_slice", args.slice_)
+    if args.plan_revision is not None:
+        if args.plan_revision < 0:
+            _lib.die("--plan-revision must be >= 0.")
+        cur_rev = state.get("plan_revision") or 0
+        if isinstance(cur_rev, int) and args.plan_revision < cur_rev:
+            _lib.die("--plan-revision %d is lower than the current %d — the revision "
+                     "counter only moves forward." % (args.plan_revision, cur_rev))
+        set_field("plan_revision", args.plan_revision)
+    if args.commit:
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", args.commit):
+            _lib.die("--commit must be a 7-40 char hex sha; got '%s'." % args.commit)
+        set_field("last_verified_commit", args.commit)
+    if args.next_:
+        set_field("next_action", args.next_)
+
+    # -- gates ---------------------------------------------------------------
+    skipped_gates = [n for n, v in gates if v == "skipped"]
+    if skipped_gates and not args.skip_reason:
+        _lib.die("gate(s) %s set to 'skipped' — add --skip-reason \"<why this gate "
+                 "does not apply>\" (recorded in skip_reasons)."
+                 % ", ".join(skipped_gates))
+    if skipped_gates and not args.approver:
+        _lib.die("gate(s) %s set to 'skipped' — skipping a gate is a WAIVER and "
+                 "waivers are human acts: add --approver \"<human name>\" (recorded "
+                 "in waiver_approvers). Agents may not self-waive; protocol: "
+                 "docs/runbooks/break-glass.md." % ", ".join(skipped_gates))
+    if ("human_approval", "approved") in gates and not args.approver:
+        _lib.die("setting human_approval=approved requires --approver \"<name>\" — "
+                 "this gate is recorded BY A HUMAN; agents may not self-approve. "
+                 "The approver's name is written to state.yaml and events.jsonl.")
+    if args.approver and ("human_approval", "approved") not in gates \
+            and not skipped_gates:
+        _lib.die("--approver only applies together with --gate "
+                 "human_approval=approved or a --gate <name>=skipped waiver.")
+    for name, value in gates:
+        old = state["gates"].get(name)
+        changes["gates.%s" % name] = {"from": old, "to": value}
+        state["gates"][name] = value
+        if value == "skipped":
+            state["skip_reasons"][name] = args.skip_reason
+            changes["skip_reasons.%s" % name] = {"from": None, "to": args.skip_reason}
+            state["waiver_approvers"][name] = args.approver
+            changes["waiver_approvers.%s" % name] = {"from": None,
+                                                     "to": args.approver}
+        else:
+            if name in state.get("skip_reasons", {}):
+                old_reason = state["skip_reasons"].pop(name)
+                changes["skip_reasons.%s" % name] = {"from": old_reason, "to": None}
+            if name in state.get("waiver_approvers", {}):
+                old_appr = state["waiver_approvers"].pop(name)
+                changes["waiver_approvers.%s" % name] = {"from": old_appr,
+                                                         "to": None}
+        if name == "human_approval" and value == "approved":
+            set_field("approver", args.approver)
+
+    _lib.write_state(args.wo, state, cfg)
+    _lib.append_event(args.wo, {"event": "state.updated", "changes": changes},
+                      cfg, actor=actor)
+
+    summary = ", ".join("%s: %s → %s" % (k, v["from"], v["to"])
+                        for k, v in changes.items()) or "no effective changes"
+    print("%s updated — %s" % (args.wo, summary))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

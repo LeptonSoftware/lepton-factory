@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""Compute a Work Order's risk tier from changed paths and .factory/config.yaml.
+
+First matching rule per file wins; the highest tier across all files wins
+overall; files matching no rule get the configured default. Changed paths are
+the union of the committed diff (base...HEAD), uncommitted changes, and
+untracked files — a dirty working tree is included with a warning so a
+half-committed auth/ change cannot under-tier the WO.
+
+--write records the tier in state.yaml but only ever RAISES it (agents may not
+lower a tier). --verify exits 1 when the computed tier ranks ABOVE the recorded
+state.yaml risk_tier — CI runs this so a hand-lowered tier cannot survive.
+
+--set <tier> --approver "<human name>" is the ONLY sanctioned way to LOWER a
+tier: a HUMAN decision, recorded in state.yaml (risk_tier_set_by) and
+events.jsonl (risk_tier.lowered, with approver). Agents may not run --set on
+their own judgment — a human must decide and be named. The computed tier at
+--set time is also recorded (risk_tier_set_computed); --verify accepts a
+human-lowered tier only while the computed tier stays at or below that record,
+so a change that grows into riskier paths re-fails CI until the human
+re-affirms. Protocol: docs/runbooks/break-glass.md.
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import _lib  # noqa: E402
+
+
+def _git_lines(args_):
+    try:
+        out = subprocess.run(
+            ["git"] + args_, cwd=_lib.repo_root(),
+            capture_output=True, text=True, check=True,
+        ).stdout
+        return [p for p in out.splitlines() if p.strip()]
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def changed_paths(base):
+    """Union of committed diff vs base, uncommitted changes, and untracked
+    files; falls back to the plan's Files: entries when git yields nothing."""
+    committed = _git_lines(["diff", "--name-only", "%s...HEAD" % base]) or []
+    working = _git_lines(["diff", "--name-only", "HEAD"]) or []
+    untracked = _git_lines(["ls-files", "--others", "--exclude-standard"]) or []
+    dirty = sorted(set(working) | set(untracked))
+    if dirty:
+        sys.stderr.write(
+            "warning: working tree is dirty — including %d uncommitted/untracked "
+            "path(s) in the tier computation.\n" % len(dirty))
+    paths = sorted(set(committed) | set(dirty))
+    if paths:
+        source = "git diff %s...HEAD" % base
+        if dirty:
+            source += " + working tree"
+        return paths, source
+    return [], None
+
+
+def plan_paths(wo_id, cfg):
+    """Fallback: declared `- Files:` entries in implementation-plan.md."""
+    plan = os.path.join(_lib.wo_dir(wo_id, cfg), "implementation-plan.md")
+    if not os.path.isfile(plan):
+        return []
+    paths = []
+    for line in _lib.strip_html_comments(_lib.read_text(plan)).splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("- files:"):
+            rest = stripped.split(":", 1)[1]
+            for tok in rest.replace(",", " ").split():
+                tok = tok.strip("`")
+                if "/" in tok or "." in tok:
+                    paths.append(tok.rstrip("/"))
+    return paths
+
+
+def tier_for(path, rules, default):
+    for rule in rules:
+        for pat in rule.get("paths", []) or []:
+            if _lib.path_matches(path, pat):
+                return rule.get("tier", default), rule.get("reason", "")
+    return default, "no rule matched (config default)"
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="risk-tier",
+        description="Compute (and optionally record or verify) a Work Order's "
+                    "risk tier from changed paths and .factory/config.yaml risk "
+                    "rules. Uncommitted/untracked changes are included (with a "
+                    "warning).")
+    ap.add_argument("--wo", required=True, metavar="WO-NNNN", help="work order ID")
+    ap.add_argument("--base", default="origin/main",
+                    help="git base ref for changed paths (default: origin/main)")
+    ap.add_argument("--write", action="store_true",
+                    help="record the computed tier in state.yaml (raise only — "
+                         "never lowers an existing tier)")
+    ap.add_argument("--verify", action="store_true",
+                    help="exit 1 if the computed tier ranks ABOVE state.yaml's "
+                         "recorded risk_tier (CI contract: the recorded tier may "
+                         "never undercut the computed one; a human --set record "
+                         "is honored while the computed tier stays within it)")
+    ap.add_argument("--set", choices=_lib.TIERS, dest="set_tier", metavar="TIER",
+                    help="record TIER in state.yaml regardless of the computed "
+                         "tier — requires --approver. The ONLY sanctioned "
+                         "lowering path, and it is a HUMAN act: agents may not "
+                         "use --set on their own judgment "
+                         "(docs/runbooks/break-glass.md)")
+    ap.add_argument("--approver", metavar="NAME",
+                    help="the HUMAN authorizing --set; recorded in state.yaml "
+                         "(risk_tier_set_by) and events.jsonl")
+    args = ap.parse_args()
+
+    if args.set_tier and args.write:
+        ap.error("--set and --write are mutually exclusive (--write only raises; "
+                 "--set is the human-attested override)")
+    if args.set_tier and not args.approver:
+        ap.error("--set requires --approver \"<human name>\" — setting (and "
+                 "especially lowering) a tier is a HUMAN decision; agents may "
+                 "not lower a tier on their own judgment")
+    if args.approver and not args.set_tier:
+        ap.error("--approver only applies together with --set")
+
+    cfg = _lib.load_config()
+    _lib.check_wo_id(args.wo, cfg)
+
+    risk = cfg.get("risk", {}) or {}
+    default = risk.get("default", "medium")
+    rules = risk.get("rules", []) or []
+
+    paths, source = changed_paths(args.base)
+    if not paths:
+        paths = plan_paths(args.wo, cfg)
+        source = "implementation-plan.md Files: entries (no git diff available)"
+    if not paths:
+        _lib.die("no changed paths found via git diff %s...HEAD (incl. working "
+                 "tree) and no Files: entries in the implementation plan — commit "
+                 "work or fill the plan's Steps before computing a tier."
+                 % args.base)
+
+    overall, reasons = "low", []
+    for p in paths:
+        tier, reason = tier_for(p, rules, default)
+        if _lib.TIER_RANK[tier] > _lib.TIER_RANK[overall]:
+            overall = tier
+        reasons.append((p, tier, reason))
+
+    print("risk tier: %s   (paths from %s)" % (overall, source))
+    for p, tier, reason in reasons:
+        print("  %-8s %s  — %s" % (tier, p, reason))
+
+    if args.verify:
+        state = _lib.load_state(args.wo, cfg)
+        recorded = state.get("risk_tier")
+        if recorded not in _lib.TIER_RANK:
+            _lib.die("state.yaml risk_tier '%s' is invalid — record a tier via "
+                     "tools/agent/risk-tier --wo %s --write, then re-verify."
+                     % (recorded, args.wo))
+        if _lib.TIER_RANK[overall] > _lib.TIER_RANK[recorded]:
+            set_by = state.get("risk_tier_set_by")
+            set_computed = state.get("risk_tier_set_computed")
+            if set_by and set_computed in _lib.TIER_RANK \
+                    and _lib.TIER_RANK[overall] <= _lib.TIER_RANK[set_computed]:
+                print("verify OK (human override): recorded risk_tier '%s' was "
+                      "set by %s via --set when the computed tier was '%s'; "
+                      "computed '%s' has not grown past that record."
+                      % (recorded, set_by, set_computed, overall))
+            elif set_by:
+                _lib.die("computed tier '%s' ranks ABOVE the recorded risk_tier "
+                         "'%s' AND past what %s approved via --set (computed "
+                         "'%s' at the time) — the change has grown riskier; a "
+                         "human must re-affirm (risk-tier --wo %s --set <tier> "
+                         "--approver \"<name>\") or raise via --write."
+                         % (overall, recorded, set_by, set_computed, args.wo))
+            else:
+                _lib.die("computed tier '%s' ranks ABOVE the recorded risk_tier "
+                         "'%s' — raise the record via tools/agent/risk-tier --wo "
+                         "%s --write and run the additional gates the higher "
+                         "tier requires (agents may never lower a tier)."
+                         % (overall, recorded, args.wo))
+        else:
+            print("verify OK: recorded risk_tier '%s' covers computed '%s'."
+                  % (recorded, overall))
+
+    if args.write:
+        state = _lib.load_state(args.wo, cfg)
+        _lib.require_intact_state(state, args.wo)
+        current = state.get("risk_tier") or default
+        if current not in _lib.TIER_RANK:
+            current = default
+        if _lib.TIER_RANK[overall] > _lib.TIER_RANK[current]:
+            state["risk_tier"] = overall
+            _lib.write_state(args.wo, state, cfg)
+            _lib.append_event(args.wo, {"event": "risk_tier.raised",
+                                        "from": current, "to": overall}, cfg)
+            print("state.yaml risk_tier raised: %s -> %s" % (current, overall))
+        else:
+            print("state.yaml risk_tier kept at %s (computed %s does not raise it)"
+                  % (current, overall))
+
+    if args.set_tier:
+        state = _lib.load_state(args.wo, cfg)
+        _lib.require_intact_state(state, args.wo)
+        current = state.get("risk_tier") or default
+        if current not in _lib.TIER_RANK:
+            current = default
+        state["risk_tier"] = args.set_tier
+        state["risk_tier_set_by"] = args.approver
+        state["risk_tier_set_computed"] = overall
+        _lib.write_state(args.wo, state, cfg)
+        lowered = _lib.TIER_RANK[args.set_tier] < _lib.TIER_RANK[current]
+        _lib.append_event(
+            args.wo,
+            {"event": "risk_tier.lowered" if lowered else "risk_tier.raised",
+             "from": current, "to": args.set_tier, "approver": args.approver},
+            cfg)
+        print("state.yaml risk_tier %s: %s -> %s (approver: %s; computed at set "
+              "time: %s)" % ("LOWERED by human decision" if lowered else "set",
+                             current, args.set_tier, args.approver, overall))
+
+
+if __name__ == "__main__":
+    main()

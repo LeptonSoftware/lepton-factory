@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""review-package — compose a controlled-context review bundle for a gate.
+
+Reviewer briefs must be self-contained and their inputs controlled (the reviewer
+gets what the gate allows, not the implementer's narrative). This assembles the
+bundle so a caller — or `agent-review` — can dispatch it without hand-gathering
+files: the diff, the WO's contract.md, and a brief stub carrying that gate's
+must/must-not-receive rules. It is READ-ONLY on the repo; it writes only under the
+output directory.
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import _lib  # noqa: E402
+
+# Gate -> (what the reviewer receives, what it must NOT receive). Sourced from the
+# reviewer skills' controlled-context sections; keep in sync with them.
+GATE_CONTEXT = {
+    "plan_challenge": (
+        "requirements (verbatim ACs), blueprints, current system behavior in the "
+        "touched area, contract.md, implementation-plan.md",
+        "any statement the design is approved; implementer confidence or narration; "
+        "prior review findings"),
+    "review_slice": (
+        "the slice diff, contract.md, the policies",
+        "the implementer's self-justification; prior verdicts"),
+    "verification_audit": (
+        "contract.md's verification table, the tests, the ability to break behavior "
+        "in a disposable worktree",
+        "the claim 'all tests pass'; implementation-authored evidence summaries"),
+    "adversarial_qa": (
+        "the problem statement (WO Summary), verbatim ACs, invariants from "
+        "contract.md, run instructions, the diff, test commands",
+        "the plan or its justification; prior review findings; other lenses' "
+        "findings; the implementer's narrative"),
+    "final_review": (
+        "the full diff, contract.md, run/verification evidence, the six-dimension "
+        "round template",
+        "the implementer's self-certification as a substitute for independent "
+        "judgment"),
+}
+
+
+def run(cmd, cwd):
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="review-package",
+        description="Assemble a controlled-context review bundle (diff + contract + "
+                    "brief stub) for a gate.")
+    ap.add_argument("--wo", required=True, metavar="WO-NNNN", help="work order ID")
+    ap.add_argument("--gate", required=True, choices=sorted(GATE_CONTEXT),
+                    help="which gate's controlled-context rules to apply")
+    ap.add_argument("--base", default="origin/main",
+                    help="git base ref for the diff (default origin/main)")
+    ap.add_argument("--out", metavar="DIR",
+                    help="output dir (default /tmp/review-package-<WO>-<gate>/)")
+    args = ap.parse_args()
+
+    cfg = _lib.load_config()
+    _lib.check_wo_id(args.wo, cfg)
+    wo_path = _lib.wo_dir(args.wo, cfg)
+    if not os.path.isdir(wo_path):
+        _lib.die("%s does not exist — run tools/agent/init-work-order --wo %s first."
+                 % (_lib.rel(wo_path), args.wo))
+
+    out = args.out or os.path.join("/tmp", "review-package-%s-%s"
+                                   % (args.wo, args.gate))
+    os.makedirs(out, exist_ok=True)
+    root = _lib.repo_root()
+
+    # diff.patch (committed range) + untracked list
+    diff = run(["git", "diff", "%s...HEAD" % args.base], root).stdout
+    untracked = run(["git", "ls-files", "--others", "--exclude-standard"], root).stdout
+    with open(os.path.join(out, "diff.patch"), "w", encoding="utf-8") as f:
+        f.write(diff)
+    with open(os.path.join(out, "untracked-files.txt"), "w", encoding="utf-8") as f:
+        f.write(untracked)
+
+    # contract.md copy
+    contract = os.path.join(wo_path, "contract.md")
+    if os.path.isfile(contract):
+        shutil.copy(contract, os.path.join(out, "contract.md"))
+
+    # brief stub
+    receives, excludes = GATE_CONTEXT[args.gate]
+    brief = (
+        "# Review brief — %s — gate: %s\n\n"
+        "Compose the full brief from the `%s` skill; this stub carries only the "
+        "controlled-context rules so nothing leaks in.\n\n"
+        "## The reviewer RECEIVES\n%s\n(files in this bundle: diff.patch, "
+        "untracked-files.txt, contract.md)\n\n"
+        "## The reviewer must NOT receive\n%s\n\n"
+        "## Objective\n%s\n"
+        % (args.wo, args.gate,
+           {"plan_challenge": "challenge-plan", "review_slice": "review-slice",
+            "verification_audit": "audit-verification",
+            "adversarial_qa": "adversarial-qa",
+            "final_review": "finish-work-order / review-log template"}[args.gate],
+           receives, excludes,
+           "Falsification — find why this should NOT be accepted; approve only what "
+           "survives honest attack." if args.gate != "review_slice"
+           else "Two ordered verdicts: spec compliance vs contract, then engineering "
+                "quality vs policies."))
+    with open(os.path.join(out, "brief.md"), "w", encoding="utf-8") as f:
+        f.write(brief)
+
+    print("review bundle: %s" % out)
+    for name in sorted(os.listdir(out)):
+        print("  %s" % name)
+    print("dispatch: tools/agent/agent-review --runner <codex|claude> --brief %s"
+          % os.path.join(out, "brief.md"))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,90 @@
+# Factory configuration — machine-read by tools/agent/* and CI.
+# Owner: factory operators. Changes to this file are high-tier by definition.
+
+version: 1
+
+ids:
+  work_order: "WO-[0-9]{4}"
+  # WO-9900+ reserved for scratch/testing: excluded from generated indexes,
+  # check-traceability, and validate-work-order --all (init/update still work
+  # on them). Delete scratch WOs after use.
+  scratch_min: 9900
+  requirement: "REQ-[A-Z0-9]+-[0-9]{3}"
+  acceptance_criterion: "AC-[A-Z0-9]+-[0-9]{3}\\.[0-9]+"
+  blueprint: "BP-(CONT|COMP|FEAT)-[A-Z0-9-]+"
+  coverage: "COV-[A-Z0-9]+-[0-9]{3}\\.[0-9]+"
+
+paths:
+  work_orders: .factory/work-orders
+  requirements: docs/product/features
+  blueprints: docs/architecture
+  templates: .factory/templates
+  indexes: .factory/indexes
+  feedback: .factory/feedback
+
+# Forbidden competing roots — CI fails if any of these exist.
+forbidden_paths:
+  - .sw-factory
+  - .specify
+  - factory
+  - .plans
+  - TODOS.md
+
+# Blueprint → code-path ownership map. Drives drift detection, review routing, and
+# risk tiering. Every entry needs an owner. Populated as blueprints are authored;
+# the harness itself is the first mapped component.
+blueprints:
+  # Authored by WO-0003 (distillation); code paths land when the kernel is seeded.
+  BP-CONT-KERNEL:
+    paths:
+      - services/kernel/**   # TODO: placeholder until seeding — see WO-0003
+    owner: kernel-line       # Line Operator TBD; factory-operators steward until assigned
+  BP-COMP-FACTORY-HARNESS:
+    paths:
+      - .factory/**
+      - tools/agent/**
+      - .claude/skills/**
+      - .github/workflows/**
+      - AGENTS.md
+    owner: factory-operators
+
+# Risk tiering rules, evaluated by tools/agent/risk-tier in order; first match wins
+# per file, highest tier across files wins overall. Humans may raise; only a named
+# human may lower (risk-tier --set --approver — docs/runbooks/break-glass.md);
+# agents may not lower.
+risk:
+  default: medium
+  rules:
+    - tier: high
+      reason: security-sensitive or hard-to-reverse
+      paths:
+        - "**/auth/**"
+        - "**/migrations/**"
+        - "**/db/migration/**"   # Flyway (singular) convention
+        - "**/alembic/**"        # Alembic versions/ live here
+        - "**/billing/**"
+        - "**/*secret*"
+        - "**/*Secret*"          # case-robust: SecretRotation.java etc.
+        - .factory/config.yaml
+        - .factory/policies/**
+        - .github/workflows/**
+        - tools/agent/**       # gate tooling — the scripts that enforce the gates
+        # .claude/skills/** is deliberately NOT high: skills tier medium (the
+        # default) so the improvement loop stays affordable; prompt-injection
+        # defense is CODEOWNERS routing to factory-operators + human PR review.
+    - tier: low
+      reason: descriptive documentation and generated files
+      paths:
+        - docs/runbooks/**
+        - docs/testing/**
+        - .factory/indexes/**
+        - "**/*.generated.md"
+
+# Gate requirements per tier (validate-work-order enforces presence of records).
+# At medium tier the adversarial lenses and the convergence gap check FOLD INTO
+# the final review round (one clean-context falsification pass —
+# .factory/README.md §4); they are separate gates only at high tier.
+gates:
+  low: [slice_reviews, validate]
+  medium: [contract, plan_challenge, slice_reviews, verification_audit, final_review]
+  high: [contract, plan_challenge, slice_reviews, verification_audit, adversarial_behavior, adversarial_operations, adversarial_architecture, convergence, final_review, human_approval]

@@ -1,0 +1,25 @@
+# Factory learning record — one per Work Order with meaningful friction.
+# Lives at .factory/feedback/<YYYY-MM>/WO-XXXX.yaml. Synthesized periodically by
+# the factory-learn orchestrator into skills, templates, tools, docs, and CI.
+
+work_order: WO-XXXX
+date: YYYY-MM-DD
+absorbed_by: null   # set by factory-learn to the absorbing WO-NNNN when this record is acted on
+
+friction:
+  # - description: Query integration setup was undocumented.
+  #   recurrence_likelihood: high     # low|medium|high
+  #   proposed_change: Add setup command to testing docs and tools/agent.
+
+failures:
+  # - description: Initial test asserted mocks and missed runtime behavior.
+  #   caught_by: verification_audit   # which gate caught it (or "not caught")
+
+improvements:
+  # - target: policy|template|skill|tool|doc|ci
+  #   proposal: Require one real cancellation integration test for stream features.
+
+rejected_approaches:
+  # Durable record of approaches tried and abandoned, so future agents don't retry them.
+  # - approach: <what>
+  #   reason: <why rejected>

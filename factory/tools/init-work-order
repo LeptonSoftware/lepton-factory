@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""init-work-order — create (or resume) a Work Order execution directory.
+
+Usage:
+  init-work-order --wo WO-1042 [--title "Outcome as a user-observable result"]
+
+Creates .factory/work-orders/WO-1042/ from .factory/templates/:
+  work-order.md (only if absent — authoring may precede init), context.md,
+  contract.md, implementation-plan.md, checklist.md, review-log.md,
+  state.yaml (status: ready), events.jsonl (wo.initialized event), evidence/.
+
+Idempotent: re-running never clobbers existing files; it reports what exists,
+creates only what is missing, and exits 0 (resume support).
+"""
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import _lib  # noqa: E402
+
+TEMPLATED_FILES = [
+    "work-order.md",
+    "context.md",
+    "contract.md",
+    "implementation-plan.md",
+    "checklist.md",
+    "review-log.md",
+    "state.yaml",
+]
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="init-work-order",
+        description="Create (or resume) a Work Order execution directory from "
+                    ".factory/templates/. Idempotent: never clobbers existing files.")
+    ap.add_argument("--wo", required=True, metavar="WO-NNNN",
+                    help="work order ID (format from .factory/config.yaml ids.work_order)")
+    ap.add_argument("--title", default=None,
+                    help="outcome title substituted into a freshly created work-order.md")
+    args = ap.parse_args()
+
+    cfg = _lib.load_config()
+    _lib.check_wo_id(args.wo, cfg)
+
+    wo_path = _lib.wo_dir(args.wo, cfg)
+    tpl_dir = _lib.templates_dir(cfg)
+    created, kept = [], []
+
+    os.makedirs(wo_path, exist_ok=True)
+
+    for name in TEMPLATED_FILES:
+        dst = os.path.join(wo_path, name)
+        if os.path.exists(dst):
+            kept.append(name)
+            continue
+        src = os.path.join(tpl_dir, name)
+        if not os.path.isfile(src):
+            _lib.die("template %s is missing — restore .factory/templates/ from "
+                     "version control." % _lib.rel(src))
+        text = _lib.read_text(src).replace("WO-XXXX", args.wo)
+        if name == "work-order.md" and args.title:
+            text = text.replace("<Outcome, stated as a user-observable result>",
+                                args.title, 1)
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write(text)
+        created.append(name)
+
+    evidence = os.path.join(wo_path, "evidence")
+    if os.path.isdir(evidence):
+        kept.append("evidence/")
+    else:
+        os.makedirs(evidence)
+        # .gitkeep so the empty directory survives in git
+        open(os.path.join(evidence, ".gitkeep"), "w").close()
+        created.append("evidence/")
+
+    events = os.path.join(wo_path, "events.jsonl")
+    if os.path.exists(events):
+        kept.append("events.jsonl")
+    else:
+        open(events, "w").close()
+        _lib.append_event(args.wo, {"event": "wo.initialized"}, cfg)
+        created.append("events.jsonl")
+
+    print("%s: %s" % (args.wo, _lib.rel(wo_path)))
+    if created:
+        print("created: " + ", ".join(created))
+    if kept:
+        print("already existed (kept): " + ", ".join(kept))
+    if not created:
+        print("nothing to do — directory fully initialized; resume from state.yaml.")
+    if "work-order.md" in created and not args.title:
+        print("note: work-order.md was created from the template — author it "
+              "(title, scope, requirements) before compiling the contract.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

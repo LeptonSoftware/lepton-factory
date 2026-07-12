@@ -1,0 +1,36 @@
+# Machine-readable execution state — the resume point. Updated by
+# tools/agent/update-state at every checkpoint; never reconstructed from memory.
+# An agent resuming this WO reads this file first, then checklist.md, then the plan.
+
+work_order: WO-XXXX
+status: ready            # ready|context|contract|planned|in_progress|in_review|approved|merged|released|blocked
+risk_tier: medium        # low|medium|high — set by tools/agent/risk-tier; humans may raise, agents may not lower
+risk_tier_set_by: null   # human who set the tier via risk-tier --set (the only lowering path); null otherwise
+risk_tier_set_computed: null  # tier computed from paths when --set ran; --verify re-fails if risk grows past it
+current_phase: start     # start|context|contract|plan|implement|review|verify|adversarial|converge|handoff
+                         # Phase-to-gate mapping: implement = slices being built (execute-slice);
+                         # review = Gate B slice-review loop; verify = Gate C (audit-verification);
+                         # adversarial = Gate D lenses + synthesize-review + repair;
+                         # converge = convergence gate; handoff = finish-work-order.
+current_slice: null      # e.g. S02
+plan_revision: 0
+last_verified_commit: null
+next_action: "run init and begin context gathering"
+blocked_on: null         # human-readable blocker; set whenever status=blocked
+
+gates:
+  contract: pending              # pending|done|skipped
+  plan_challenge: pending        # pending|approve|approve_with_risks|revise|human_decision_required|skipped
+  slice_reviews: pending         # pending|approved|changes_requested (latest slice)
+  verification_audit: pending    # pending|approved|changes_requested|skipped
+  adversarial_qa: pending        # pending|approved|changes_requested|skipped
+  convergence: pending           # pending|done|skipped
+  final_review: pending          # pending|approved|changes_requested
+  human_approval: pending        # pending|approved|not_required
+
+# Every `skipped` requires a skip_reasons entry.
+skip_reasons: {}
+
+# Every `skipped` gate also records the HUMAN who waived it
+# (update-state --approver; protocol: docs/runbooks/break-glass.md).
+waiver_approvers: {}
