@@ -56,6 +56,16 @@ def test_fresh_install_copies_and_stamps(tmp_path):
     assert ".factory/README.md" in report["written"]
     assert report["manifest"][".factory/README.md"] == fi.sha256_text(readme)
 
+def test_copy_payload_preserves_unicode_utf8(tmp_path):
+    payload = tmp_path / "payload"; (payload / "policies").mkdir(parents=True)
+    (payload / "README.md").write_text("# Manual — em dash\n", encoding="utf-8")
+    (payload / "policies" / "testing.md").write_text("policy — dashy\n", encoding="utf-8")
+    target = tmp_path / "repo"; target.mkdir()
+    fi.copy_payload(payload, target, upgrade=False)
+    got = (target / ".factory/README.md").read_text(encoding="utf-8")
+    assert "—" in got                      # em dash survived the copy
+    assert "—" in (target / ".factory/policies/testing.md").read_text(encoding="utf-8")
+
 def test_state_dirs_created(tmp_path):
     fi.ensure_state_dirs(tmp_path)
     for d in ["work-orders","feedback","indexes","overrides"]:

@@ -1,22 +1,20 @@
 """Bootstrap/upgrade the Vinxi factory harness in a target repo. Stdlib only."""
 from __future__ import annotations
-import argparse, hashlib, json, os, pathlib, re, shutil, sys
+import argparse, hashlib, json, pathlib, re, shutil, sys
 
-BANNER_TEXT = (
-    "MANAGED BY vinxi-factory — do not hand-edit. "
-    "Run /factory-init --upgrade to update. "
-    "To diverge, add a shadowing file under .factory/overrides/."
-)
+BANNER_LINES = [
+    "MANAGED BY vinxi-factory — do not hand-edit.",
+    "Run /factory-init --upgrade to update.",
+    "To diverge, add a shadowing file under .factory/overrides/.",
+]
+BANNER_TEXT = " ".join(BANNER_LINES)
 
 def banner_for(dst_rel: str) -> str:
-    suffix = pathlib.PurePosixPath(dst_rel).suffix
+    suffix = pathlib.PurePosixPath(dst_rel).suffix.lower()
     if suffix == ".md":
         return f"<!-- {BANNER_TEXT} -->"
     if suffix in (".yaml", ".yml"):
-        return "\n".join(f"# {line}" for line in
-                         ["MANAGED BY vinxi-factory — do not hand-edit.",
-                          "Run /factory-init --upgrade to update.",
-                          "To diverge, add a shadowing file under .factory/overrides/."])
+        return "\n".join(f"# {line}" for line in BANNER_LINES)
     return ""
 
 def stamp(content: str, dst_rel: str) -> str:
@@ -32,12 +30,12 @@ def read_manifest(target_root: pathlib.Path) -> dict:
     p = target_root / MANIFEST_REL
     if not p.exists():
         return {}
-    return json.loads(p.read_text())
+    return json.loads(p.read_text(encoding="utf-8"))
 
 def write_manifest(target_root: pathlib.Path, entries: dict) -> None:
     p = target_root / MANIFEST_REL
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n")
+    p.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 PAYLOAD = [
     ("README.md",   ".factory/README.md",   True,  False),
@@ -61,17 +59,17 @@ def copy_payload(payload_root, target_root, *, upgrade: bool) -> dict:
     prior = read_manifest(target_root)
     written, skipped, manifest = [], [], {}
     for src, dst_rel, do_stamp, mode in iter_payload_files(payload_root):
-        content = src.read_text()
+        content = src.read_text(encoding="utf-8")
         out = stamp(content, dst_rel) if do_stamp else content
         new_sha = sha256_text(out)
         dst = target_root / dst_rel
         if upgrade and dst.exists() and dst_rel in prior \
-                and sha256_text(dst.read_text()) != prior[dst_rel]:
+                and sha256_text(dst.read_text(encoding="utf-8")) != prior[dst_rel]:
             skipped.append(dst_rel)                 # adopter-edited: preserve
             manifest[dst_rel] = prior[dst_rel]
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(out)
+        dst.write_text(out, encoding="utf-8")
         if mode:
             shutil.copymode(src, dst)
         written.append(dst_rel)
@@ -94,7 +92,7 @@ def install_config(payload_root, target_root) -> bool:
     if dst.exists():
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text((payload_root / "config.yaml").read_text())
+    dst.write_text((payload_root / "config.yaml").read_text(encoding="utf-8"), encoding="utf-8")
     return True
 
 MARK_START = "<!-- vinxi-factory:managed:start -->"
@@ -129,8 +127,8 @@ def apply_managed_block(existing: str | None, block: str) -> str:
 def write_routers(target_root) -> None:
     for name, block in (("AGENTS.md", ROUTER_BLOCK), ("CLAUDE.md", CLAUDE_BLOCK)):
         p = target_root / name
-        existing = p.read_text() if p.exists() else None
-        p.write_text(apply_managed_block(existing, block))
+        existing = p.read_text(encoding="utf-8") if p.exists() else None
+        p.write_text(apply_managed_block(existing, block), encoding="utf-8")
 
 def default_payload_root() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parent.parent / "factory"
