@@ -57,3 +57,19 @@ def config_blueprint_line(seed: dict, factory_root) -> tuple:
     c = seed["container"]
     owner = c.get("owner") or load_profile(factory_root, seed["stack"])["owner_default"]
     return f"BP-CONT-{c['name']}", {"applies_to": c["applies_to"], "owner": owner}
+
+def render_frd(seed: dict, date: str) -> tuple:
+    f = seed["feature"]; area = seed["area"]
+    front = {"title": f"{f['title']} — Requirements", "summary": f"FRD for {f['title']}",
+             "owners": ["product-owner"], "status": "draft", "last_verified": date}
+    parts = [f"## User Story\n\n{f['user_story']}\n"]
+    for r in f["reqs"]:
+        rid = f"REQ-{area}-{int(r['id_seq']):03d}"
+        parts.append(f"## {rid} — {r['statement']}\n")
+        parts.append("Acceptance criteria:\n")
+        for j, ac in enumerate(r["acs"], start=1):
+            parts.append(f"- {rid.replace('REQ','AC')}.{j} {ac}")
+        parts.append("")
+    body = "\n".join(parts)
+    dst_rel = f"docs/product/features/{f['slug']}/requirements.md"
+    return dst_rel, f"{frontmatter(front)}\n# {f['title']}\n\n{body.rstrip()}\n"

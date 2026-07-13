@@ -53,3 +53,11 @@ def test_owner_defaults_consistent_when_omitted():
     _, meta = seed.config_blueprint_line(s, ROOT/"factory")
     assert "owners: [app-line]" in content
     assert meta["owner"] == "app-line"          # doc and config agree
+
+import re
+def test_render_frd_ids_match_grammar():
+    dst_rel, content = seed.render_frd(_ok(), "2026-07-13")
+    assert dst_rel == "docs/product/features/greeting-cli/requirements.md"
+    assert re.search(r"REQ-CORE-001\b", content)
+    assert re.search(r"AC-CORE-001\.1\b", content)
+    assert "User Story" in content
