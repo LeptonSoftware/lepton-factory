@@ -209,9 +209,13 @@ def apply_seed(seed, target_root, date, factory_root=None) -> list:
     dst, content = s.render_container(seed, date, factory_root)
     written.append(_write_if_absent(target_root, dst, content, True))
     dst, content = s.render_frd(seed, date); written.append(_write_if_absent(target_root, dst, content, True))
+    # Overview + glossary are stubbed seed-once by copy_docs_skeleton before an
+    # explicit seed op ever runs. During apply_seed the wizard content IS the
+    # human-confirmed answer, so it must overwrite those stubs rather than be
+    # skipped by the generic "human-owned, skip if present" rule.
     for dst, content in s.render_overview(seed):
-        written.append(_write_if_absent(target_root, dst, content, True))
-    dst, content = s.render_glossary(seed); written.append(_write_if_absent(target_root, dst, content, True))
+        written.append(_write_if_absent(target_root, dst, content, False))
+    dst, content = s.render_glossary(seed); written.append(_write_if_absent(target_root, dst, content, False))
     # mirror blueprint into config.yaml blueprints: (in place — see
     # mirror_blueprint_into_config for why we never append a new top-level key)
     bpid, meta = s.config_blueprint_line(seed, factory_root)

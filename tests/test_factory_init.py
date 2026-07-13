@@ -187,6 +187,28 @@ def test_apply_seed_preserves_existing_blueprints_entries(tmp_path):
     # seeded entry uses the real `paths:` list convention
     assert "    paths:\n      - apps/app/**\n" in text
 
+def test_apply_seed_overwrites_skeleton_stubs_for_overview_and_glossary(tmp_path):
+    # Regression: copy_docs_skeleton (run during fi.run()) writes seed-once STUBS
+    # to docs/product/overview/*.md and docs/domain/glossary.md. apply_seed's
+    # overview/glossary writes used to be human_owned=True (skip-if-exists), so
+    # the wizard's explicitly-confirmed content was silently dropped because the
+    # stub already existed. Overview + glossary writes must overwrite instead.
+    payload = ROOT / "factory"
+    repo = tmp_path / "repo"; repo.mkdir()
+    fi.run(repo, payload, upgrade=False)   # materializes the stub glossary/overview
+    assert (repo / "docs/domain/glossary.md").is_file()
+    assert (repo / "docs/product/overview/product-description.md").is_file()
+    s = { "tier":"internal","stack":"node","area":"CORE",
+          "feature":{"slug":"greeting-cli","title":"Greeting CLI","user_story":"u",
+                     "reqs":[{"id_seq":1,"statement":"greet","acs":["prints hi"]}]},
+          "container":{"slug":"app","name":"APP","title":"App","summary":"s",
+                       "owner":"app-line","applies_to":["apps/app/**"],"body":"b"},
+          "overview":{"product_description":"UNIQUEPROSE"},
+          "glossary":[{"term":"Zebra","definition":"a striped equine"}]}
+    fi.apply_seed(s, repo, "2026-07-13")
+    assert "Zebra" in (repo / "docs/domain/glossary.md").read_text()
+    assert "UNIQUEPROSE" in (repo / "docs/product/overview/product-description.md").read_text()
+
 def test_mirror_blueprint_into_config_creates_key_when_absent():
     text = fi.mirror_blueprint_into_config("version: 1\n", "BP-CONT-APP",
                                            {"paths": ["apps/app/**"], "owner": "o"})

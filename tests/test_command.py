@@ -12,3 +12,8 @@ def test_command_is_a_wizard():
     t = (ROOT/"commands/factory-init.md").read_text()
     for token in ["clarify-intent","tier","stack","--seed","WO-0001","one question at a time"]:
         assert token in t, token
+
+def test_command_elicits_area_and_handles_invalid_seed():
+    t = (ROOT/"commands/factory-init.md").read_text()
+    assert "area" in t.lower()
+    assert "Invalid seed:" in t
