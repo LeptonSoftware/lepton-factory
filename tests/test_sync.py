@@ -1,10 +1,12 @@
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+PLUGIN_SCRIPT = ROOT / "scripts" / "sync-from-source.py"
 
 
 def _make_fake_source(tmp_path: pathlib.Path) -> pathlib.Path:
@@ -44,46 +46,49 @@ def _make_fake_source(tmp_path: pathlib.Path) -> pathlib.Path:
     return src
 
 
+def _make_temp_plugin(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A throwaway plugin tree so the sync writes here, never the real repo.
+
+    sync-from-source.py derives its plugin root from ``__file__`` (its own
+    location), so running a COPY of the script from this temp dir makes it
+    materialize into the temp tree. The real repo is only read (to copy the
+    script) and never mutated — no git checkout/clean cleanup needed.
+    """
+    plugin = tmp_path / "plugin"
+    (plugin / "scripts").mkdir(parents=True)
+    shutil.copy2(PLUGIN_SCRIPT, plugin / "scripts" / "sync-from-source.py")
+    for d in ("skills", "hooks", "factory"):
+        (plugin / d).mkdir()
+    return plugin
+
+
 def test_sync_materializes_skills_hooks_and_payload(tmp_path):
     src = _make_fake_source(tmp_path)
+    plugin = _make_temp_plugin(tmp_path)
 
     result = subprocess.run(
-        [sys.executable, "scripts/sync-from-source.py", "--source", str(src)],
-        cwd=ROOT,
+        [sys.executable, str(plugin / "scripts" / "sync-from-source.py"), "--source", str(src)],
+        cwd=str(plugin),
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
 
-    try:
-        # skills
-        assert (ROOT / "skills" / "demo" / "SKILL.md").is_file()
-        assert (ROOT / "skills" / "demo" / "SKILL.md").read_text() == "# demo skill\n"
+    # skills
+    assert (plugin / "skills" / "demo" / "SKILL.md").is_file()
+    assert (plugin / "skills" / "demo" / "SKILL.md").read_text() == "# demo skill\n"
 
-        # hook
-        hooks_doc = json.loads((ROOT / "hooks" / "hooks.json").read_text())
-        assert "SessionStart" in hooks_doc["hooks"]
-        assert hooks_doc["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "echo hi"
+    # hook
+    hooks_doc = json.loads((plugin / "hooks" / "hooks.json").read_text())
+    assert "SessionStart" in hooks_doc["hooks"]
+    assert hooks_doc["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "echo hi"
 
-        # payload
-        assert (ROOT / "factory" / "README.md").read_text() == "# factory readme\n"
-        assert (ROOT / "factory" / "config.yaml").read_text() == "key: value\n"
-        assert (ROOT / "factory" / "policies" / "x.md").read_text() == "policy x\n"
-        assert (ROOT / "factory" / "templates" / "y.md").read_text() == "template y\n"
+    # payload
+    assert (plugin / "factory" / "README.md").read_text() == "# factory readme\n"
+    assert (plugin / "factory" / "config.yaml").read_text() == "key: value\n"
+    assert (plugin / "factory" / "policies" / "x.md").read_text() == "policy x\n"
+    assert (plugin / "factory" / "templates" / "y.md").read_text() == "template y\n"
 
-        z_dst = ROOT / "factory" / "tools" / "z"
-        assert z_dst.is_file()
-        assert os.access(z_dst, os.X_OK)
-    finally:
-        # restore the real plugin state via git so this test doesn't leave
-        # the working tree dirty with fixture content
-        subprocess.run(
-            ["git", "checkout", "--", "skills", "hooks", "factory"],
-            cwd=ROOT,
-            check=False,
-        )
-        subprocess.run(
-            ["git", "clean", "-fd", "skills", "hooks", "factory"],
-            cwd=ROOT,
-            check=False,
-        )
+    z_dst = plugin / "factory" / "tools" / "z"
+    assert z_dst.is_file()
+    assert os.access(z_dst, os.X_OK)
