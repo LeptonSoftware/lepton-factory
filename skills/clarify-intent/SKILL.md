@@ -30,13 +30,16 @@ Scan the record or request across these 11 categories, marking each Clear / Part
 
 ## Ask
 
-- Maximum 5 questions per session. If more categories are Partial/Missing, take the top 5 by Impact × Uncertainty; the rest are Deferred.
-- One question at a time, waiting for the answer before continuing — multiple questions at once are bewildering. Never reveal queued questions in advance.
-- Each question is answerable by multiple choice (2–5 mutually exclusive options) or "answer in ≤5 words", with your recommended answer first: `**Recommended:** Option B — <reasoning>`. A plain "yes" accepts the recommendation.
+- Drive until the ambiguity is resolved, not to a fixed count. Order the Partial/Missing categories by Impact × Uncertainty and work down them relentlessly — the session ends when every high-impact category is Resolved or consciously Deferred with a rationale, however many questions that takes. Do not stop early because a quota is hit; do not manufacture questions once nothing material is left unclear.
+- **Batch independent questions into one round.** Ask the questions that don't depend on each other *together*, as a numbered list (aim for 3–5 per round — readable at a glance), and let the human answer them in a single pass. Go one-at-a-time *only* when an answer genuinely forks the next question (a real dependency): ask that gating question alone, then batch the rest once it's resolved. Relentless total depth — many questions across several rounds — is the discipline; drip-feeding one question at a time is not, it just wastes the human's time.
+- Each question is answerable by multiple choice (2–5 mutually exclusive options) or "answer in ≤5 words", with your recommended answer first: `**Recommended:** Option B — <reasoning>`. Recommended-first is what makes a batch fast: the human rubber-stamps the defaults (`1, yes, B, defer`) and argues only the ones they care about. Number the questions so answers map unambiguously.
+- **Isolate the pivotal decision; batch the routine.** Batching + defaults invites rubber-stamping — people accept a pre-filled recommendation they'd have argued if asked alone. So the one or two questions with the highest Impact × Uncertainty are asked *singly and deliberately*, without a rubber-stampable default ("this one is load-bearing — how do you want it, and why?"), while the low-stakes independent questions batch with defaults. Never bury the decision that matters inside a list of five.
+- **A batch is a round, not the end.** Read the answers before moving on: a surprising or load-bearing answer spawns a sharper follow-up round — that adaptive thread is where grilling earns its depth. Batching trades away *per-question* adaptivity for speed; keep it at the *round* level by always asking "does this answer change what I should ask next?"
+- When the ambiguity is a domain term — a fuzzy, overloaded, or glossary-conflicting concept (category 8) — run the `domain-model` skill to challenge and sharpen it, and record the resolution in `docs/domain/glossary.md`. When the request enters territory new to this WO (an unfamiliar source, domain, or subsystem), run `wayfinder` first to map what is known / assumed / unknown, so the unknowns become explicit questions here rather than silent gaps.
 
-## Route each answer immediately
+## Route answers into records
 
-After EACH accepted answer, write it into the right record before asking the next question:
+After each round, write every accepted answer into the right record before opening the next round — don't let a batch of resolved decisions sit only in the chat:
 
 - functional behavior → REQ/AC draft in `docs/product/features/` (marked proposed — humans approve product intent)
 - structure or invariant → the owning Blueprint (marked proposed)
