@@ -17,12 +17,28 @@ def validate_seed(seed: dict) -> list:
     if not isinstance(f, dict) or not f.get("slug") or not f.get("reqs"):
         errs.append("feature{slug,title,user_story,reqs[]} required")
     else:
+        if not f.get("title"):
+            errs.append("feature.title required")
+        if not f.get("user_story"):
+            errs.append("feature.user_story required")
         for i, r in enumerate(f["reqs"]):
             if not r.get("statement") or not r.get("acs"):
                 errs.append(f"feature.reqs[{i}] needs statement + acs[]")
     c = seed.get("container")
     if not isinstance(c, dict) or not c.get("slug") or not c.get("name") or not c.get("applies_to"):
         errs.append("container{slug,name,title,summary,owner,applies_to,body} required")
+    else:
+        if not c.get("title"):
+            errs.append("container.title required")
+        if not c.get("summary"):
+            errs.append("container.summary required")
+        if not c.get("body"):
+            errs.append("container.body required")
+    if seed.get("tier") == "production":
+        ov = seed.get("overview") or {}
+        for key in ("product_description", "business_problem", "success_metrics"):
+            if not ov.get(key):
+                errs.append(f"production tier requires overview.{key}")
     return errs
 
 def load_seed(path) -> dict:
@@ -81,8 +97,9 @@ OVERVIEW_FILES = {"product_description": "product-description",
 
 def render_overview(seed: dict) -> list:
     out = []
+    overview = seed.get("overview") or {}
     for key, name in OVERVIEW_FILES.items():
-        text = seed.get("overview", {}).get(key)
+        text = overview.get(key)
         if not text:
             continue
         out.append((f"docs/product/overview/{name}.md", f"# {name.replace('-', ' ').title()}\n\n{text}\n"))

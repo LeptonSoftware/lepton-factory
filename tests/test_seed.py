@@ -23,6 +23,51 @@ def test_bad_tier_reported():
     s = _ok(); s["tier"] = "prototype"       # out of scope in V1
     assert any("tier" in e for e in seed.validate_seed(s))
 
+def test_missing_feature_title_reported():
+    s = _ok(); del s["feature"]["title"]
+    errs = seed.validate_seed(s)
+    assert any("feature.title" in e for e in errs)
+
+def test_missing_feature_user_story_reported():
+    s = _ok(); del s["feature"]["user_story"]
+    errs = seed.validate_seed(s)
+    assert any("feature.user_story" in e for e in errs)
+
+def test_missing_container_title_reported():
+    s = _ok(); del s["container"]["title"]
+    errs = seed.validate_seed(s)
+    assert any("container.title" in e for e in errs)
+
+def test_missing_container_summary_reported():
+    s = _ok(); del s["container"]["summary"]
+    errs = seed.validate_seed(s)
+    assert any("container.summary" in e for e in errs)
+
+def test_missing_container_body_reported():
+    s = _ok(); del s["container"]["body"]
+    errs = seed.validate_seed(s)
+    assert any("container.body" in e for e in errs)
+
+def test_render_overview_none_returns_empty_list_no_crash():
+    s = _ok(); s["overview"] = None
+    assert seed.render_overview(s) == []
+
+def test_production_tier_requires_full_overview():
+    s = _ok(); s["tier"] = "production"
+    s["overview"] = {"product_description": "p", "success_metrics": "m"}  # missing business_problem
+    errs = seed.validate_seed(s)
+    assert any("business_problem" in e for e in errs)
+
+def test_production_tier_accepts_full_overview():
+    s = _ok(); s["tier"] = "production"
+    s["overview"] = {"product_description": "p", "business_problem": "b", "success_metrics": "m"}
+    assert seed.validate_seed(s) == []
+
+def test_internal_tier_accepts_partial_overview():
+    s = _ok(); s["tier"] = "internal"
+    s["overview"] = {"product_description": "p"}   # missing business_problem, success_metrics
+    assert seed.validate_seed(s) == []
+
 def test_frontmatter_stable_order():
     fm = seed.frontmatter({"title":"T","summary":"s","owners":["o"],
                            "applies_to":["a/**"],"status":"draft","last_verified":"2026-07-13"})

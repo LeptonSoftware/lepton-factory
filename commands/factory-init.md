@@ -15,6 +15,9 @@ Do NOT run `factory_init.py` here — the real scaffold+seed happens once, in St
   run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/factory_init.py" --target "$(pwd)" --upgrade`
   instead of re-seeding. Only continue into the interview if they explicitly want to seed a
   new feature on top of the existing install.
+  Note: re-running with `--seed` overwrites `docs/product/overview/*` and
+  `docs/domain/glossary.md` with the new seed content — use `--upgrade` (no `--seed`) if you
+  only want to refresh the harness itself without touching those files.
 
 ## 2. Interview (one question at a time; confirm each answer)
 1. **Ambition tier** — internal app or production service? (Prototype is not yet supported by

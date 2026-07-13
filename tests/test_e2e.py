@@ -1,4 +1,4 @@
-import importlib.util, os, pathlib, shutil
+import importlib.util, json, os, pathlib, shutil, subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("fi", ROOT / "scripts/factory_init.py")
 fi = importlib.util.module_from_spec(spec); spec.loader.exec_module(fi)
@@ -42,7 +42,6 @@ def test_upgrade_preserves_edit_against_real_payload(tmp_path):
     assert ".factory/policies/security.md" in s["skipped_edited"]
     assert "team override note" in pol.read_text()
 
-import json, subprocess, sys
 def test_seed_produces_validator_passing_repo(tmp_path):
     repo = tmp_path/"adopter"; repo.mkdir()
     subprocess.run(["git","init","-q"], cwd=repo, check=True)
@@ -58,3 +57,11 @@ def test_seed_produces_validator_passing_repo(tmp_path):
     assert rc == 0
     assert (repo/"docs/architecture/containers/app.md").is_file()
     assert (repo/".factory/work-orders/WO-0001/work-order.md").is_file()
+
+def test_missing_seed_file_returns_rc2(tmp_path):
+    repo = tmp_path/"adopter"; repo.mkdir()
+    rc = fi.main(["--target", str(repo), "--seed", "/nonexistent.json",
+                  "--tier", "internal", "--stack", "node"])
+    assert rc == 2
+    # scaffolding still ran before the seed load failed
+    assert (repo/".factory/README.md").is_file()

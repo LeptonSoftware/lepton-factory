@@ -51,7 +51,7 @@ def iter_payload_files(payload_root):
             yield src, dst_rel, do_stamp, mode
         else:
             for f in sorted(src.rglob("*")):
-                if f.is_file():
+                if f.is_file() and "__pycache__" not in f.parts and f.suffix != ".pyc":
                     rel = f.relative_to(src).as_posix()
                     yield f, f"{dst_rel}/{rel}", do_stamp, mode
 
@@ -162,12 +162,13 @@ def default_payload_root() -> pathlib.Path:
 def run(target_root, payload_root, *, upgrade: bool) -> dict:
     target_root = pathlib.Path(target_root); payload_root = pathlib.Path(payload_root)
     report = copy_payload(payload_root, target_root, upgrade=upgrade)
-    copy_docs_skeleton(payload_root, target_root)
+    skeleton_report = copy_docs_skeleton(payload_root, target_root)
     ensure_state_dirs(target_root)
     config_written = install_config(payload_root, target_root)
     write_routers(target_root)
     write_manifest(target_root, report["manifest"])
-    return {"written": report["written"], "skipped_edited": report["skipped_edited"],
+    return {"written": report["written"] + skeleton_report["written"],
+            "skipped_edited": report["skipped_edited"],
             "config_written": config_written, "upgrade": upgrade}
 
 import importlib.util as _ilu, subprocess as _sp
@@ -297,7 +298,11 @@ def main(argv=None) -> int:
         print("Wrote .factory/config.yaml (adopter-owned; edit freely).")
     if a.seed:
         seedmod = _seedmod()
-        seed = seedmod.load_seed(a.seed)
+        try:
+            seed = seedmod.load_seed(a.seed)
+        except (FileNotFoundError, json.JSONDecodeError) as err:
+            print(f"Invalid seed: {err}")
+            return 2
         errs = seedmod.validate_seed(seed)
         if errs:
             print("Invalid seed:\n  " + "\n  ".join(errs))
