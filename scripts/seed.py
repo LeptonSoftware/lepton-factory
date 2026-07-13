@@ -74,3 +74,22 @@ def render_frd(seed: dict, date: str) -> tuple:
     body = "\n".join(parts)
     dst_rel = f"docs/product/features/{f['slug']}/requirements.md"
     return dst_rel, build_doc(front, f["title"], body)
+
+OVERVIEW_FILES = {"product_description": "product-description",
+                  "business_problem": "business-problem",
+                  "success_metrics": "success-metrics"}
+
+def render_overview(seed: dict) -> list:
+    out = []
+    for key, name in OVERVIEW_FILES.items():
+        text = seed.get("overview", {}).get(key)
+        if not text:
+            continue
+        out.append((f"docs/product/overview/{name}.md", f"# {name.replace('-', ' ').title()}\n\n{text}\n"))
+    return out
+
+def render_glossary(seed: dict) -> tuple:
+    lines = ["## Terms", ""]
+    for t in seed.get("glossary", []):
+        lines.append(f"- **{t['term']}** — {t['definition']}")
+    return "docs/domain/glossary.md", "# Glossary\n\n" + "\n".join(lines) + "\n"

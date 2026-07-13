@@ -67,3 +67,9 @@ def test_ac_id_area_not_corrupted_by_replace():
     _, content = seed.render_frd(s, "2026-07-13")
     assert "AC-FREQ-001.1" in content
     assert "AC-FAC" not in content
+
+def test_render_overview_and_glossary():
+    ovs = dict(seed.render_overview(_ok()))
+    assert "docs/product/overview/product-description.md" in ovs
+    dst, gl = seed.render_glossary(_ok())
+    assert dst == "docs/domain/glossary.md" and "**T**" in gl
