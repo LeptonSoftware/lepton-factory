@@ -1,7 +1,6 @@
 ---
 name: wo-author
-description: Author a new Work Order from an idea, feature request, review finding, or convergence gap. Run as /wo-author <intent or source record>.
-disable-model-invocation: true
+description: Use when a human asks to record new work — author a Work Order from an idea, feature request, review finding, or convergence gap. Run as /wo-author <intent> or invoke directly when the human has clearly requested a WO. NOT for mid-execution follow-ups (use the stub path — see below).
 ---
 
 <!-- sizing/section craft adapted from 8090-inc/software-factory-plugin
@@ -23,6 +22,8 @@ A Work Order is a bounded delivery contract: it links records, it does not repro
 - **E2E Acceptance Tests** — one COV row per AC; the section proves how each AC is validated, not how the code is written.
 
 What a WO is **not**: it carries no line-by-line coding instructions — that is the implementation plan's job, written after context and contract. Dependent WOs are sequenced (a later WO names the earlier ones it depends on), not merged.
+
+**When to run this vs the stub path — the boundary is intent, not a tool lock.** Run this skill when a **human has asked to record new work** (an idea, feature request, or "make a WO for X") — authoring is the response to human intent, so you may invoke it directly then; you do not wait for the human to type the exact slash command. Do **not** invoke it to spawn work *no human requested*: a follow-up surfaced mid-execution — a convergence gap, an out-of-scope finding, an adversarial-QA leftover — is created via the **stub path** instead: `tools/agent/init-work-order` + `.factory/templates/work-order.md`, filling only the traced summary line, exactly as `converge-work-order` does. The stub keeps the executing agent from context-switching into a full authoring session; the human triages the stub later. The rule that protects scope is behavioral — *only author what a human asked for* — not a hard block on the skill.
 
 1. If the intent is ambiguous (unclear outcome, scope, actor, or success signal), run the `clarify-intent` skill before anything else.
 2. Verify upstream records exist: every behavior needs a REQ/AC in `docs/product/features/`; every structural decision needs a Blueprint in `docs/architecture/`. Missing product intent → STOP: draft the REQ/BP as a proposal and route it to humans (agents propose, humans approve — `AGENTS.md`). The WO stays unauthored or blocked until the record is approved; never invent REQ/AC IDs to fill the gap. **Before creating any architecture record, read `docs/architecture/README.md`** — do not rely on remembered conventions. Structure goes in a Blueprint; a *decision* (hard-to-reverse + surprising + a real trade-off) goes in an ADR **nested inside the blueprint it shapes**, not a free-standing file — write or extend the blueprint first, then add the ADR to it. Reserve `docs/architecture/decisions/` **only** for a decision that genuinely spans multiple *existing* blueprints. And before a blueprint claims any `applies_to` paths, check the `.factory/config.yaml` `blueprints:` map: never claim paths another blueprint already owns (duplicate ownership is a defect).

@@ -95,7 +95,7 @@ a disposable database before review (`.factory/README.md` §6).
 
 **Rule.** External agent skills, CLI tools, and CI actions are vendored or version-
 pinned, reviewed before adoption, and never auto-updated. Provenance (source repo,
-license, what was adapted) is recorded in `docs/architecture/harness-provenance.md`.
+license, what was adapted) is recorded in `docs/_sources/harness-provenance.md`.
 The research is explicit that agent skills are an emerging supply-chain risk: an
 unpinned or unreviewed skill can inject instructions into every session that uses it.
 
