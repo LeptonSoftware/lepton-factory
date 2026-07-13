@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf 'Re-read AGENTS.md \u2014 it routes this repository (skills, docs, tools, policies). If mid-Work-Order, resume from .factory/work-orders/<WO>/state.yaml: it names the phase and next_action. Never reconstruct execution position from conversation memory.\\n'"
+            "command": "if [ -d .factory ]; then printf 'Re-read AGENTS.md \u2014 it routes this repository (skills, docs, tools, policies). If mid-Work-Order, resume from .factory/work-orders/<WO>/state.yaml.\\n'; else printf 'This repo has the Lepton factory plugin but is not initialized. Run /factory-init to set it up and seed your first feature.\\n'; fi"
           }
         ]
       }

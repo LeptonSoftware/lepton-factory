@@ -1,0 +1,3 @@
+{ "owner_default": "product-owner",
+  "applies_to_hint": "src/**",
+  "test_note": "Add tests appropriate to the stack; wire them into CI." }

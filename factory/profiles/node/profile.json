@@ -1,0 +1,3 @@
+{ "owner_default": "app-line",
+  "applies_to_hint": "apps/**",
+  "test_note": "Use the repo's Node test runner (vitest/jest); every AC gets a COV-tagged test." }

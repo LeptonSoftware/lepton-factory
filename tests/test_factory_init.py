@@ -1,4 +1,4 @@
-import importlib.util, pathlib
+import importlib.util, pathlib, re
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("fi", ROOT / "scripts/factory_init.py")
 fi = importlib.util.module_from_spec(spec); spec.loader.exec_module(fi)
@@ -124,3 +124,149 @@ def test_main_returns_zero(tmp_path):
     target = tmp_path / "repo"; target.mkdir()
     rc = fi.main(["--target", str(target), "--payload", str(payload)])
     assert rc == 0 and (target / "AGENTS.md").is_file()
+
+def test_docs_skeleton_materialized(tmp_path):
+    payload = tmp_path/"payload"; (payload/"docs-skeleton/architecture/containers").mkdir(parents=True)
+    (payload/"docs-skeleton/architecture/containers/TEMPLATE.md").write_text("# BP-CONT-<NAME>\n")
+    (payload/"docs-skeleton/product/features").mkdir(parents=True)
+    (payload/"docs-skeleton/product/features/README.md").write_text("FRD guide\n")
+    (payload/"docs-skeleton/domain").mkdir(parents=True)
+    (payload/"docs-skeleton/domain/glossary.md").write_text("# Glossary\n")
+    (payload/"README.md").write_text("# m\n"); (payload/"config.yaml").write_text("v: 1\n")
+    (payload/"policies").mkdir(); (payload/"templates").mkdir(); (payload/"tools").mkdir()
+    target = tmp_path/"repo"; target.mkdir()
+    fi.copy_docs_skeleton(payload, target)
+    assert (target/"docs/architecture/containers/TEMPLATE.md").read_text().startswith("<!--")  # managed banner
+    assert (target/"docs/product/features/README.md").is_file()
+    # glossary is seed-once: pre-existing content preserved
+    (target/"docs/domain/glossary.md").write_text("MY TERMS\n")
+    fi.copy_docs_skeleton(payload, target)
+    assert (target/"docs/domain/glossary.md").read_text() == "MY TERMS\n"
+
+import importlib.util, subprocess
+_seedspec = importlib.util.spec_from_file_location("seed", ROOT/"scripts/seed.py")
+_seed = importlib.util.module_from_spec(_seedspec); _seedspec.loader.exec_module(_seed)
+
+def test_apply_seed_writes_kebab_artifacts(tmp_path):
+    target = tmp_path/"repo"; (target/".factory").mkdir(parents=True)
+    (target/".factory/config.yaml").write_text("blueprints:\n")
+    s = { "tier":"internal","stack":"node","area":"CORE",
+          "feature":{"slug":"greeting-cli","title":"Greeting CLI","user_story":"u",
+                     "reqs":[{"id_seq":1,"statement":"greet","acs":["prints hi"]}]},
+          "container":{"slug":"app","name":"APP","title":"App","summary":"s",
+                       "owner":"app-line","applies_to":["apps/app/**"],"body":"b"},
+          "overview":{"product_description":"p"}, "glossary":[{"term":"Greeting","definition":"d"}]}
+    written = fi.apply_seed(s, target, "2026-07-13")
+    assert (target/"docs/architecture/containers/app.md").is_file()
+    assert (target/"docs/product/features/greeting-cli/requirements.md").is_file()
+    cfg_text = (target/".factory/config.yaml").read_text()
+    assert "BP-CONT-APP" in cfg_text
+    # config mirror uses the real `paths:` list convention (matches check-drift's
+    # spec.get("paths") — NOT the doc front-matter's `applies_to:` key).
+    assert "    paths:\n      - apps/app/**\n" in cfg_text
+
+def test_apply_seed_preserves_existing_blueprints_entries(tmp_path):
+    # Regression: apply_seed used to append a NEW top-level `blueprints:` block.
+    # Duplicate top-level YAML keys resolve last-write-wins, so pre-existing
+    # blueprint entries silently vanished from the parsed config. The new entry
+    # must be inserted UNDER the existing `blueprints:` key instead.
+    target = tmp_path/"repo"; (target/".factory").mkdir(parents=True)
+    (target/".factory/config.yaml").write_text(
+        "version: 1\n\nblueprints:\n  BP-CONT-EXISTING:\n    applies_to: [x/**]\n    owner: o\n")
+    s = { "tier":"internal","stack":"node","area":"CORE",
+          "feature":{"slug":"greeting-cli","title":"Greeting CLI","user_story":"u",
+                     "reqs":[{"id_seq":1,"statement":"greet","acs":["prints hi"]}]},
+          "container":{"slug":"app","name":"APP","title":"App","summary":"s",
+                       "owner":"app-line","applies_to":["apps/app/**"],"body":"b"},
+          "overview":{"product_description":"p"}, "glossary":[{"term":"Greeting","definition":"d"}]}
+    fi.apply_seed(s, target, "2026-07-13")
+    text = (target/".factory/config.yaml").read_text()
+    assert "BP-CONT-EXISTING" in text
+    assert "BP-CONT-APP" in text
+    assert len(re.findall(r"^blueprints:\s*$", text, re.MULTILINE)) == 1
+    # seeded entry uses the real `paths:` list convention
+    assert "    paths:\n      - apps/app/**\n" in text
+
+def test_apply_seed_overwrites_skeleton_stubs_for_overview_and_glossary(tmp_path):
+    # Regression: copy_docs_skeleton (run during fi.run()) writes seed-once STUBS
+    # to docs/product/overview/*.md and docs/domain/glossary.md. apply_seed's
+    # overview/glossary writes used to be human_owned=True (skip-if-exists), so
+    # the wizard's explicitly-confirmed content was silently dropped because the
+    # stub already existed. Overview + glossary writes must overwrite instead.
+    payload = ROOT / "factory"
+    repo = tmp_path / "repo"; repo.mkdir()
+    fi.run(repo, payload, upgrade=False)   # materializes the stub glossary/overview
+    assert (repo / "docs/domain/glossary.md").is_file()
+    assert (repo / "docs/product/overview/product-description.md").is_file()
+    s = { "tier":"internal","stack":"node","area":"CORE",
+          "feature":{"slug":"greeting-cli","title":"Greeting CLI","user_story":"u",
+                     "reqs":[{"id_seq":1,"statement":"greet","acs":["prints hi"]}]},
+          "container":{"slug":"app","name":"APP","title":"App","summary":"s",
+                       "owner":"app-line","applies_to":["apps/app/**"],"body":"b"},
+          "overview":{"product_description":"UNIQUEPROSE"},
+          "glossary":[{"term":"Zebra","definition":"a striped equine"}]}
+    fi.apply_seed(s, repo, "2026-07-13")
+    assert "Zebra" in (repo / "docs/domain/glossary.md").read_text()
+    assert "UNIQUEPROSE" in (repo / "docs/product/overview/product-description.md").read_text()
+
+def test_mirror_blueprint_into_config_creates_key_when_absent():
+    text = fi.mirror_blueprint_into_config("version: 1\n", "BP-CONT-APP",
+                                           {"paths": ["apps/app/**"], "owner": "o"})
+    assert text.count("blueprints:") == 1
+    assert "BP-CONT-APP" in text
+    assert "    paths:\n      - apps/app/**\n" in text
+
+def test_mirror_blueprint_into_config_idempotent():
+    text = fi.mirror_blueprint_into_config("blueprints:\n", "BP-CONT-APP",
+                                           {"paths": ["a/**"], "owner": "o"})
+    twice = fi.mirror_blueprint_into_config(text, "BP-CONT-APP",
+                                            {"paths": ["a/**"], "owner": "o"})
+    assert twice == text
+
+def test_fill_section_replaces_content_keeps_order():
+    md = "# T\n\n## A\n\nold a\n\n## B\n\nold b\n\n## C\n\nold c\n"
+    out = fi.fill_section(md, "B", "new b")
+    headings = re.findall(r"^## .*$", out, re.MULTILINE)
+    assert headings == ["## A", "## B", "## C"]
+    assert "new b" in out and "old b" not in out
+    assert "old a" in out and "old c" in out
+
+def test_fill_section_missing_heading_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        fi.fill_section("# T\n\n## A\n\nx\n", "Missing", "y")
+
+def test_author_wo1_fills_sections_in_place_no_duplicate_headings(tmp_path):
+    payload = _payload(tmp_path)
+    for name in ["templates", "docs-skeleton"]:
+        (payload/name).mkdir(exist_ok=True)
+    (payload/"config.yaml").write_text("version: 1\n")
+    target = tmp_path/"repo"; target.mkdir()
+    fi.run(target, payload, upgrade=False)
+    # scaffold a real tools/agent + templates from the plugin's own factory/ dir
+    real_factory = ROOT/"factory"
+    for rel in ["templates", "tools"]:
+        src = real_factory/rel
+        dst = target/(".factory/templates" if rel == "templates" else "tools/agent")
+        if dst.exists():
+            import shutil as _shutil; _shutil.rmtree(dst)
+        import shutil as _shutil; _shutil.copytree(src, dst)
+    (target/".factory/config.yaml").write_text((real_factory/"config.yaml").read_text())
+    s = { "tier":"internal","stack":"node","area":"CORE",
+          "feature":{"slug":"greeting-cli","title":"Greeting CLI","user_story":"u",
+                     "reqs":[{"id_seq":1,"statement":"greet","acs":["prints hi"]}]},
+          "container":{"slug":"app","name":"APP","title":"App","summary":"s",
+                       "owner":"app-line","applies_to":["apps/app/**"],"body":"b"}}
+    fi.author_wo1(s, target, "2026-07-13")
+    wo = target/".factory/work-orders/WO-0001/work-order.md"
+    text = wo.read_text()
+    headings = re.findall(r"^## .*$", text, re.MULTILINE)
+    assert headings == ["## Summary", "## In Scope", "## Out of Scope",
+                        "## Requirements", "## Blueprints",
+                        "## Decision classification", "## E2E Acceptance Tests"]
+    assert "REQ-CORE-001" in text and "BP-CONT-APP" in text
+    # idempotent: re-running does not duplicate or append anything
+    fi.author_wo1(s, target, "2026-07-13")
+    text2 = wo.read_text()
+    assert re.findall(r"^## .*$", text2, re.MULTILINE) == headings
+    assert text2.count("REQ-CORE-001") == 1

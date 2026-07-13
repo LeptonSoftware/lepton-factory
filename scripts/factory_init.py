@@ -51,7 +51,7 @@ def iter_payload_files(payload_root):
             yield src, dst_rel, do_stamp, mode
         else:
             for f in sorted(src.rglob("*")):
-                if f.is_file():
+                if f.is_file() and "__pycache__" not in f.parts and f.suffix != ".pyc":
                     rel = f.relative_to(src).as_posix()
                     yield f, f"{dst_rel}/{rel}", do_stamp, mode
 
@@ -75,6 +75,32 @@ def copy_payload(payload_root, target_root, *, upgrade: bool) -> dict:
         written.append(dst_rel)
         manifest[dst_rel] = new_sha
     return {"written": written, "skipped_edited": skipped, "manifest": manifest}
+
+SKELETON_SRC = "docs-skeleton"
+SKELETON_MANAGED_SUFFIX = ("TEMPLATE.md", "README.md", "principles.md")  # authoring refs → stamped/managed
+
+def _is_seed_once(dst_rel: str) -> bool:
+    # overview stubs + glossary become human-owned; never overwrite once present
+    return dst_rel.startswith("docs/product/overview/") or dst_rel == "docs/domain/glossary.md"
+
+def copy_docs_skeleton(payload_root, target_root) -> dict:
+    src_root = pathlib.Path(payload_root) / SKELETON_SRC
+    written, skipped = [], []
+    if not src_root.is_dir():
+        return {"written": written, "skipped": skipped}
+    for f in sorted(src_root.rglob("*")):
+        if not f.is_file():
+            continue
+        dst_rel = "docs/" + f.relative_to(src_root).as_posix()
+        dst = pathlib.Path(target_root) / dst_rel
+        if _is_seed_once(dst_rel) and dst.exists():
+            skipped.append(dst_rel); continue
+        content = f.read_text(encoding="utf-8")
+        if dst_rel.endswith(SKELETON_MANAGED_SUFFIX):
+            content = stamp(content, dst_rel)     # banner on authoring references
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(content, encoding="utf-8"); written.append(dst_rel)
+    return {"written": written, "skipped": skipped}
 
 STATE_DIRS = ["work-orders", "feedback", "indexes", "overrides"]
 
@@ -136,12 +162,120 @@ def default_payload_root() -> pathlib.Path:
 def run(target_root, payload_root, *, upgrade: bool) -> dict:
     target_root = pathlib.Path(target_root); payload_root = pathlib.Path(payload_root)
     report = copy_payload(payload_root, target_root, upgrade=upgrade)
+    skeleton_report = copy_docs_skeleton(payload_root, target_root)
     ensure_state_dirs(target_root)
     config_written = install_config(payload_root, target_root)
     write_routers(target_root)
     write_manifest(target_root, report["manifest"])
-    return {"written": report["written"], "skipped_edited": report["skipped_edited"],
+    return {"written": report["written"] + skeleton_report["written"],
+            "skipped_edited": report["skipped_edited"],
             "config_written": config_written, "upgrade": upgrade}
+
+import importlib.util as _ilu, subprocess as _sp
+
+def _seedmod():
+    p = pathlib.Path(__file__).resolve().parent / "seed.py"
+    sp = _ilu.spec_from_file_location("seed", p); m = _ilu.module_from_spec(sp); sp.loader.exec_module(m)
+    return m
+
+def _write_if_absent(target_root, dst_rel, content, human_owned):
+    dst = pathlib.Path(target_root) / dst_rel
+    if human_owned and dst.exists():
+        return None
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(content, encoding="utf-8"); return dst_rel
+
+BLUEPRINTS_KEY_RE = re.compile(r"^blueprints:\s*$", re.MULTILINE)
+
+def mirror_blueprint_into_config(text: str, bpid: str, meta: dict) -> str:
+    """Insert a `  {bpid}:` entry UNDER the existing top-level `blueprints:` key
+    (or create that key if absent), never as a second top-level `blueprints:`
+    block — duplicate top-level keys resolve last-write-wins in this repo's YAML
+    parser, which would silently drop every pre-existing blueprint entry."""
+    entry_lines = [f"  {bpid}:", "    paths:"] + [f"      - {p}" for p in meta["paths"]] + [f"    owner: {meta['owner']}"]
+    if re.search(rf"^  {re.escape(bpid)}:\s*$", text, re.MULTILINE):
+        return text                                 # already present
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if BLUEPRINTS_KEY_RE.match(line):
+            new_lines = lines[:i + 1] + entry_lines + lines[i + 1:]
+            return "\n".join(new_lines) + "\n"
+    sep = [""] if lines else []
+    new_lines = lines + sep + ["blueprints:"] + entry_lines
+    return "\n".join(new_lines) + "\n"
+
+def apply_seed(seed, target_root, date, factory_root=None) -> list:
+    s = _seedmod(); factory_root = factory_root or (pathlib.Path(target_root)/".factory")
+    written = []
+    dst, content = s.render_container(seed, date, factory_root)
+    written.append(_write_if_absent(target_root, dst, content, True))
+    dst, content = s.render_frd(seed, date); written.append(_write_if_absent(target_root, dst, content, True))
+    # Overview + glossary are stubbed seed-once by copy_docs_skeleton before an
+    # explicit seed op ever runs. During apply_seed the wizard content IS the
+    # human-confirmed answer, so it must overwrite those stubs rather than be
+    # skipped by the generic "human-owned, skip if present" rule.
+    for dst, content in s.render_overview(seed):
+        written.append(_write_if_absent(target_root, dst, content, False))
+    dst, content = s.render_glossary(seed); written.append(_write_if_absent(target_root, dst, content, False))
+    # mirror blueprint into config.yaml blueprints: (in place — see
+    # mirror_blueprint_into_config for why we never append a new top-level key)
+    bpid, meta = s.config_blueprint_line(seed, factory_root)
+    cfg = pathlib.Path(target_root)/".factory/config.yaml"
+    text = cfg.read_text(encoding="utf-8")
+    new_text = mirror_blueprint_into_config(text, bpid, meta)
+    if new_text != text:
+        cfg.write_text(new_text, encoding="utf-8")
+    return [w for w in written if w]
+
+def validator_gate(target_root) -> tuple:
+    tools = pathlib.Path(target_root)/"tools/agent"
+    out = []
+    for cmd in (["generate-indexes"], ["check-traceability"], ["validate-work-order", "--all"]):
+        r = _sp.run(["python3", str(tools/cmd[0]), *cmd[1:]], cwd=target_root,
+                    capture_output=True, text=True, encoding="utf-8")
+        out.append(f"$ {cmd[0]} {' '.join(cmd[1:])}\n{r.stdout}{r.stderr}")
+        if r.returncode != 0:
+            return r.returncode, "\n".join(out)
+    return 0, "\n".join(out)
+
+SECTION_HEADING_RE = re.compile(r"^## .*$", re.MULTILINE)
+
+def fill_section(md: str, heading: str, body_text: str) -> str:
+    """Replace the content between a `## {heading}` line and the next `## `
+    heading (or EOF) with body_text. Never appends a new heading — the section
+    must already exist in the document (work-order.md's template already ships
+    every section a freshly-authored WO needs); raises if it is absent so a
+    caller can't silently corrupt the artifact's structure by re-adding a
+    heading in the wrong place."""
+    target = f"## {heading}"
+    start = None
+    for m in SECTION_HEADING_RE.finditer(md):
+        if m.group(0).strip() == target:
+            start = m.end()
+            break
+    if start is None:
+        raise ValueError(f"fill_section: heading '{target}' not found in document")
+    next_m = SECTION_HEADING_RE.search(md, start)
+    end = next_m.start() if next_m else len(md)
+    filled = f"\n\n{body_text.rstrip()}\n\n"
+    return md[:start] + filled + md[end:]
+
+def author_wo1(seed, target_root, date) -> None:
+    tools = pathlib.Path(target_root)/"tools/agent"; s = seed
+    _sp.run(["python3", str(tools/"init-work-order"), "--wo", "WO-0001",
+             "--title", s["feature"]["title"]], cwd=target_root, check=True)
+    wo = pathlib.Path(target_root)/".factory/work-orders/WO-0001/work-order.md"
+    if not wo.exists():
+        return
+    area = s["area"]
+    reqs_body = "\n".join(f"- REQ-{area}-{int(r['id_seq']):03d}" for r in s["feature"]["reqs"])
+    bp_body = f"- BP-CONT-{s['container']['name']}"
+    decision_body = "- HITL decisions: (none)\n- AFK: all other execution decisions"
+    md = wo.read_text(encoding="utf-8")
+    md = fill_section(md, "Requirements", reqs_body)
+    md = fill_section(md, "Blueprints", bp_body)
+    md = fill_section(md, "Decision classification", decision_body)
+    wo.write_text(md, encoding="utf-8")
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="factory-init",
@@ -149,6 +283,9 @@ def main(argv=None) -> int:
     ap.add_argument("--target", default=".")
     ap.add_argument("--payload", default=str(default_payload_root()))
     ap.add_argument("--upgrade", action="store_true")
+    ap.add_argument("--seed")
+    ap.add_argument("--tier", choices=["internal", "production"])
+    ap.add_argument("--stack", choices=["generic", "node"])
     a = ap.parse_args(argv)
     s = run(a.target, a.payload, upgrade=a.upgrade)
     mode = "Upgraded" if a.upgrade else "Installed"
@@ -159,6 +296,30 @@ def main(argv=None) -> int:
             print(f"  - {f}")
     if s["config_written"]:
         print("Wrote .factory/config.yaml (adopter-owned; edit freely).")
+    if a.seed:
+        seedmod = _seedmod()
+        try:
+            seed = seedmod.load_seed(a.seed)
+        except (FileNotFoundError, json.JSONDecodeError) as err:
+            print(f"Invalid seed: {err}")
+            return 2
+        errs = seedmod.validate_seed(seed)
+        if errs:
+            print("Invalid seed:\n  " + "\n  ".join(errs))
+            return 2
+        # date comes from the seed (the wizard injects it) or a constant
+        # fallback — never datetime.now(), so this script stays
+        # deterministic/test-stable.
+        the_date = seed.get("date") or "2026-07-13"
+        apply_seed(seed, a.target, the_date)
+        rc, out = validator_gate(a.target)
+        blocking = seed["tier"] in ("internal", "production")
+        if rc != 0 and blocking:
+            print("Seed failed the validator gate:\n" + out)
+            return rc
+        author_wo1(seed, a.target, the_date)
+        print("Seed applied and validated. Next: run /wo-execute WO-0001.")
+        return 0
     print("Next: run /wo-author to create your first Work Order.")
     return 0
 
