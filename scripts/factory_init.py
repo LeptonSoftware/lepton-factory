@@ -170,6 +170,60 @@ def run(target_root, payload_root, *, upgrade: bool) -> dict:
     return {"written": report["written"], "skipped_edited": report["skipped_edited"],
             "config_written": config_written, "upgrade": upgrade}
 
+import importlib.util as _ilu, subprocess as _sp
+
+def _seedmod():
+    p = pathlib.Path(__file__).resolve().parent / "seed.py"
+    sp = _ilu.spec_from_file_location("seed", p); m = _ilu.module_from_spec(sp); sp.loader.exec_module(m)
+    return m
+
+def _write_if_absent(target_root, dst_rel, content, human_owned):
+    dst = pathlib.Path(target_root) / dst_rel
+    if human_owned and dst.exists():
+        return None
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(content, encoding="utf-8"); return dst_rel
+
+def apply_seed(seed, target_root, date, factory_root=None) -> list:
+    s = _seedmod(); factory_root = factory_root or (pathlib.Path(target_root)/".factory")
+    written = []
+    dst, content = s.render_container(seed, date, factory_root)
+    written.append(_write_if_absent(target_root, dst, content, True))
+    dst, content = s.render_frd(seed, date); written.append(_write_if_absent(target_root, dst, content, True))
+    for dst, content in s.render_overview(seed):
+        written.append(_write_if_absent(target_root, dst, content, True))
+    dst, content = s.render_glossary(seed); written.append(_write_if_absent(target_root, dst, content, True))
+    # mirror blueprint into config.yaml blueprints:
+    bpid, meta = s.config_blueprint_line(seed, factory_root)
+    cfg = pathlib.Path(target_root)/".factory/config.yaml"
+    text = cfg.read_text(encoding="utf-8")
+    if bpid not in text:
+        text += f"\n# added by /factory-init\nblueprints:\n  {bpid}:\n    applies_to: {meta['applies_to']}\n    owner: {meta['owner']}\n"
+        cfg.write_text(text, encoding="utf-8")
+    return [w for w in written if w]
+
+def validator_gate(target_root) -> tuple:
+    tools = pathlib.Path(target_root)/"tools/agent"
+    out = []
+    for cmd in (["generate-indexes"], ["check-traceability"], ["validate-work-order", "--all"]):
+        r = _sp.run(["python3", str(tools/cmd[0]), *cmd[1:]], cwd=target_root,
+                    capture_output=True, text=True)
+        out.append(f"$ {cmd[0]} {' '.join(cmd[1:])}\n{r.stdout}{r.stderr}")
+        if r.returncode != 0:
+            return r.returncode, "\n".join(out)
+    return 0, "\n".join(out)
+
+def author_wo1(seed, target_root, date) -> None:
+    tools = pathlib.Path(target_root)/"tools/agent"; s = seed
+    _sp.run(["python3", str(tools/"init-work-order"), "--wo", "WO-0001",
+             "--title", s["feature"]["title"]], cwd=target_root, check=True)
+    wo = pathlib.Path(target_root)/".factory/work-orders/WO-0001/work-order.md"
+    if wo.exists():
+        area = s["area"]
+        wo.write_text(wo.read_text(encoding="utf-8") +
+            f"\n\n## Requirements and Blueprints\n- REQ-{area}-001\n- BP-CONT-{s['container']['name']}\n"
+            f"\n## Decision classification\n- HITL: (none)\n- AFK: all\n", encoding="utf-8")
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="factory-init",
         description="Bootstrap or upgrade the Lepton factory harness in a repo.")

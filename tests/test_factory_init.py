@@ -142,3 +142,21 @@ def test_docs_skeleton_materialized(tmp_path):
     (target/"docs/domain/glossary.md").write_text("MY TERMS\n")
     fi.copy_docs_skeleton(payload, target)
     assert (target/"docs/domain/glossary.md").read_text() == "MY TERMS\n"
+
+import importlib.util, subprocess
+_seedspec = importlib.util.spec_from_file_location("seed", ROOT/"scripts/seed.py")
+_seed = importlib.util.module_from_spec(_seedspec); _seedspec.loader.exec_module(_seed)
+
+def test_apply_seed_writes_kebab_artifacts(tmp_path):
+    target = tmp_path/"repo"; (target/".factory").mkdir(parents=True)
+    (target/".factory/config.yaml").write_text("blueprints:\n")
+    s = { "tier":"internal","stack":"node","area":"CORE",
+          "feature":{"slug":"greeting-cli","title":"Greeting CLI","user_story":"u",
+                     "reqs":[{"id_seq":1,"statement":"greet","acs":["prints hi"]}]},
+          "container":{"slug":"app","name":"APP","title":"App","summary":"s",
+                       "owner":"app-line","applies_to":["apps/app/**"],"body":"b"},
+          "overview":{"product_description":"p"}, "glossary":[{"term":"Greeting","definition":"d"}]}
+    written = fi.apply_seed(s, target, "2026-07-13")
+    assert (target/"docs/architecture/containers/app.md").is_file()
+    assert (target/"docs/product/features/greeting-cli/requirements.md").is_file()
+    assert "BP-CONT-APP" in (target/".factory/config.yaml").read_text()
