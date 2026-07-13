@@ -44,3 +44,16 @@ def build_doc(front: dict, heading: str, body: str) -> str:
 
 def load_profile(factory_root, stack: str) -> dict:
     return json.loads((pathlib.Path(factory_root)/"profiles"/stack/"profile.json").read_text(encoding="utf-8"))
+
+def render_container(seed: dict, date: str, factory_root) -> tuple:
+    c = seed["container"]; name = c["name"]; bpid = f"BP-CONT-{name}"
+    front = {"title": f"{bpid} — {c['title']}", "summary": c["summary"],
+             "owners": [c.get("owner") or load_profile(factory_root, seed['stack'])['owner_default']],
+             "applies_to": c["applies_to"], "status": "draft", "last_verified": date}
+    dst_rel = f"docs/architecture/containers/{c['slug']}.md"
+    return dst_rel, build_doc(front, f"{bpid}: {c['title']}", c["body"])
+
+def config_blueprint_line(seed: dict) -> tuple:
+    c = seed["container"]
+    return f"BP-CONT-{c['name']}", {"applies_to": c["applies_to"],
+                                    "owner": c.get("owner") or "product-owner"}

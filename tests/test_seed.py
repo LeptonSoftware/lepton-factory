@@ -38,3 +38,11 @@ def test_profiles_load(tmp_path):
     root = ROOT  # real profiles shipped in factory/profiles/
     p = seed.load_profile(root/"factory", "node")
     assert "owner_default" in p
+
+def test_render_container(tmp_path):
+    dst_rel, content = seed.render_container(_ok(), "2026-07-13", ROOT/"factory")
+    assert dst_rel == "docs/architecture/containers/app.md"
+    assert "# BP-CONT-APP: App" in content
+    assert "applies_to: [apps/app/**]" in content
+    bpid, meta = seed.config_blueprint_line(_ok())
+    assert bpid == "BP-CONT-APP" and meta["applies_to"] == ["apps/app/**"]
