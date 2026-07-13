@@ -53,7 +53,7 @@ def render_container(seed: dict, date: str, factory_root) -> tuple:
     dst_rel = f"docs/architecture/containers/{c['slug']}.md"
     return dst_rel, build_doc(front, f"{bpid}: {c['title']}", c["body"])
 
-def config_blueprint_line(seed: dict) -> tuple:
+def config_blueprint_line(seed: dict, factory_root) -> tuple:
     c = seed["container"]
-    return f"BP-CONT-{c['name']}", {"applies_to": c["applies_to"],
-                                    "owner": c.get("owner") or "product-owner"}
+    owner = c.get("owner") or load_profile(factory_root, seed["stack"])["owner_default"]
+    return f"BP-CONT-{c['name']}", {"applies_to": c["applies_to"], "owner": owner}

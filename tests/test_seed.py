@@ -44,5 +44,12 @@ def test_render_container(tmp_path):
     assert dst_rel == "docs/architecture/containers/app.md"
     assert "# BP-CONT-APP: App" in content
     assert "applies_to: [apps/app/**]" in content
-    bpid, meta = seed.config_blueprint_line(_ok())
+    bpid, meta = seed.config_blueprint_line(_ok(), ROOT/"factory")
     assert bpid == "BP-CONT-APP" and meta["applies_to"] == ["apps/app/**"]
+
+def test_owner_defaults_consistent_when_omitted():
+    s = _ok(); del s["container"]["owner"]      # node stack -> profile owner_default "app-line"
+    _, content = seed.render_container(s, "2026-07-13", ROOT/"factory")
+    _, meta = seed.config_blueprint_line(s, ROOT/"factory")
+    assert "owners: [app-line]" in content
+    assert meta["owner"] == "app-line"          # doc and config agree
