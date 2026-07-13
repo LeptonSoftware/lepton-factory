@@ -278,6 +278,9 @@ def main(argv=None) -> int:
     ap.add_argument("--target", default=".")
     ap.add_argument("--payload", default=str(default_payload_root()))
     ap.add_argument("--upgrade", action="store_true")
+    ap.add_argument("--seed")
+    ap.add_argument("--tier", choices=["internal", "production"])
+    ap.add_argument("--stack", choices=["generic", "node"])
     a = ap.parse_args(argv)
     s = run(a.target, a.payload, upgrade=a.upgrade)
     mode = "Upgraded" if a.upgrade else "Installed"
@@ -288,6 +291,26 @@ def main(argv=None) -> int:
             print(f"  - {f}")
     if s["config_written"]:
         print("Wrote .factory/config.yaml (adopter-owned; edit freely).")
+    if a.seed:
+        seedmod = _seedmod()
+        seed = seedmod.load_seed(a.seed)
+        errs = seedmod.validate_seed(seed)
+        if errs:
+            print("Invalid seed:\n  " + "\n  ".join(errs))
+            return 2
+        # date comes from the seed (the wizard injects it) or a constant
+        # fallback — never datetime.now(), so this script stays
+        # deterministic/test-stable.
+        the_date = seed.get("date") or "2026-07-13"
+        apply_seed(seed, a.target, the_date)
+        rc, out = validator_gate(a.target)
+        blocking = seed["tier"] in ("internal", "production")
+        if rc != 0 and blocking:
+            print("Seed failed the validator gate:\n" + out)
+            return rc
+        author_wo1(seed, a.target, the_date)
+        print("Seed applied and validated. Next: run /wo-execute WO-0001.")
+        return 0
     print("Next: run /wo-author to create your first Work Order.")
     return 0
 
