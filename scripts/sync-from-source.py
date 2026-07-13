@@ -6,6 +6,8 @@ It re-materializes:
   - hooks/hooks.json <- <source>/.claude/settings.json (SessionStart hook only)
   - factory/         <- <source>/.factory/{README.md,config.yaml,policies,templates}
                          and <source>/tools/agent (as factory/tools)
+  - factory/docs-skeleton/ <- <source>/docs/{architecture,product,domain} authoring
+                         templates/guides (a curated subset, not a full mirror)
 
 Run manually after upstream vinxi-platform changes. Does NOT commit anything.
 Stdlib only, Python 3.9+.
@@ -77,6 +79,40 @@ def sync_payload(source: pathlib.Path, target: pathlib.Path) -> dict:
     return counts
 
 
+DOCS_SKELETON = [
+    "docs/architecture/README.md",
+    "docs/architecture/principles.md",
+    "docs/architecture/containers/TEMPLATE.md",
+    "docs/architecture/components/TEMPLATE.md",
+    "docs/architecture/features/TEMPLATE.md",
+    "docs/architecture/decisions/README.md",
+    "docs/product/README.md",
+    "docs/product/features/README.md",
+    "docs/domain/glossary.md",
+]
+DOCS_SKELETON_DIRS = ["docs/product/overview"]   # whole dir of stubs
+
+
+def sync_docs_skeleton(source: pathlib.Path, plugin_root: pathlib.Path) -> list:
+    dst_root = plugin_root / "factory/docs-skeleton"
+    copied = []
+    for rel in DOCS_SKELETON:
+        src = source / rel
+        if not src.is_file():
+            continue
+        # strip leading "docs/" so it lands under docs-skeleton/architecture/... etc.
+        dst = dst_root / pathlib.Path(rel).relative_to("docs")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst); copied.append(str(dst.relative_to(plugin_root)))
+    for rel in DOCS_SKELETON_DIRS:
+        src = source / rel
+        if src.is_dir():
+            dst = dst_root / pathlib.Path(rel).relative_to("docs")
+            if dst.exists(): shutil.rmtree(dst)
+            shutil.copytree(src, dst); copied.append(str(dst.relative_to(plugin_root)) + "/**")
+    return copied
+
+
 def verify_tools_executable(source: pathlib.Path, target: pathlib.Path) -> list:
     """Return list of tool files under factory/tools that were executable in the
     source but lost their exec bit on copy."""
@@ -99,10 +135,12 @@ def run(source: pathlib.Path, target: pathlib.Path) -> dict:
     skills_count = sync_skills(source, target)
     sync_hook(source, target)
     payload_counts = sync_payload(source, target)
+    docs_skeleton = sync_docs_skeleton(source, target)
     non_exec = verify_tools_executable(source, target)
     return {
         "skills_files": skills_count,
         "payload": payload_counts,
+        "docs_skeleton": docs_skeleton,
         "non_exec_tools": non_exec,
     }
 
@@ -132,6 +170,7 @@ def main(argv=None) -> int:
     print("Synced payload into factory/:")
     for key, n in result["payload"].items():
         print(f"  - {key}: {n} file(s)")
+    print(f"Synced docs skeleton: {len(result['docs_skeleton'])} entr(y/ies) -> factory/docs-skeleton/")
     if result["non_exec_tools"]:
         print("WARNING: the following tool files lost their executable bit:")
         for f in result["non_exec_tools"]:
