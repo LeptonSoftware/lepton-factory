@@ -76,6 +76,32 @@ def copy_payload(payload_root, target_root, *, upgrade: bool) -> dict:
         manifest[dst_rel] = new_sha
     return {"written": written, "skipped_edited": skipped, "manifest": manifest}
 
+SKELETON_SRC = "docs-skeleton"
+SKELETON_MANAGED_SUFFIX = ("TEMPLATE.md", "README.md", "principles.md")  # authoring refs → stamped/managed
+
+def _is_seed_once(dst_rel: str) -> bool:
+    # overview stubs + glossary become human-owned; never overwrite once present
+    return dst_rel.startswith("docs/product/overview/") or dst_rel == "docs/domain/glossary.md"
+
+def copy_docs_skeleton(payload_root, target_root) -> dict:
+    src_root = pathlib.Path(payload_root) / SKELETON_SRC
+    written, skipped = [], []
+    if not src_root.is_dir():
+        return {"written": written, "skipped": skipped}
+    for f in sorted(src_root.rglob("*")):
+        if not f.is_file():
+            continue
+        dst_rel = "docs/" + f.relative_to(src_root).as_posix()
+        dst = pathlib.Path(target_root) / dst_rel
+        if _is_seed_once(dst_rel) and dst.exists():
+            skipped.append(dst_rel); continue
+        content = f.read_text(encoding="utf-8")
+        if dst_rel.endswith(SKELETON_MANAGED_SUFFIX):
+            content = stamp(content, dst_rel)     # banner on authoring references
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(content, encoding="utf-8"); written.append(dst_rel)
+    return {"written": written, "skipped": skipped}
+
 STATE_DIRS = ["work-orders", "feedback", "indexes", "overrides"]
 
 def ensure_state_dirs(target_root) -> list:
@@ -136,6 +162,7 @@ def default_payload_root() -> pathlib.Path:
 def run(target_root, payload_root, *, upgrade: bool) -> dict:
     target_root = pathlib.Path(target_root); payload_root = pathlib.Path(payload_root)
     report = copy_payload(payload_root, target_root, upgrade=upgrade)
+    copy_docs_skeleton(payload_root, target_root)
     ensure_state_dirs(target_root)
     config_written = install_config(payload_root, target_root)
     write_routers(target_root)

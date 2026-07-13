@@ -124,3 +124,21 @@ def test_main_returns_zero(tmp_path):
     target = tmp_path / "repo"; target.mkdir()
     rc = fi.main(["--target", str(target), "--payload", str(payload)])
     assert rc == 0 and (target / "AGENTS.md").is_file()
+
+def test_docs_skeleton_materialized(tmp_path):
+    payload = tmp_path/"payload"; (payload/"docs-skeleton/architecture/containers").mkdir(parents=True)
+    (payload/"docs-skeleton/architecture/containers/TEMPLATE.md").write_text("# BP-CONT-<NAME>\n")
+    (payload/"docs-skeleton/product/features").mkdir(parents=True)
+    (payload/"docs-skeleton/product/features/README.md").write_text("FRD guide\n")
+    (payload/"docs-skeleton/domain").mkdir(parents=True)
+    (payload/"docs-skeleton/domain/glossary.md").write_text("# Glossary\n")
+    (payload/"README.md").write_text("# m\n"); (payload/"config.yaml").write_text("v: 1\n")
+    (payload/"policies").mkdir(); (payload/"templates").mkdir(); (payload/"tools").mkdir()
+    target = tmp_path/"repo"; target.mkdir()
+    fi.copy_docs_skeleton(payload, target)
+    assert (target/"docs/architecture/containers/TEMPLATE.md").read_text().startswith("<!--")  # managed banner
+    assert (target/"docs/product/features/README.md").is_file()
+    # glossary is seed-once: pre-existing content preserved
+    (target/"docs/domain/glossary.md").write_text("MY TERMS\n")
+    fi.copy_docs_skeleton(payload, target)
+    assert (target/"docs/domain/glossary.md").read_text() == "MY TERMS\n"
