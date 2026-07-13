@@ -1,0 +1,65 @@
+/* ═══════════════════════════════════════════════════════════
+   VINXI / LEPTON · BRAND BASE  (standalone HTML / explainers / viz)
+   Drop this into any single-file HTML <style>. Source of truth:
+   ~/vinxi/vinxi/design/src/brand.css — keep in sync if tokens move.
+   Fonts via Google CDN (self-hosted woff2 isn't available standalone):
+   <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+   ═══════════════════════════════════════════════════════════ */
+:root{
+  /* core */
+  --midnight:#1A2040; --midnight-deep:#14193A; --snow:#FBFDFF; --snow-dim:#F2F5F9;
+  /* accent */
+  --blue:#0066E3; --blue-dark:#0055C0; --blue-tint:#E8F0FE;
+  /* text hierarchy (AA on snow) */
+  --slate:#3D4566; --graphite:#4F5670; --steel:#6B7280; --ash:#8E94A6;
+  /* borders */
+  --silver:#DFE3EA; --fog:#E4ECF5;
+  /* semantic */
+  --green:#62CA94; --green-deep:#1F8855; --green-bg:rgba(31,136,85,.12);
+  --amber:#FFAE00; --amber-text:#B57E00; --amber-bg:rgba(255,174,0,.16);
+  --red:#C8362F; --red-bg:rgba(200,54,47,.12);
+  --accent:var(--blue); --accent-strong:var(--blue-dark);
+  /* type */
+  --font-sans:'Hanken Grotesk',-apple-system,system-ui,sans-serif;
+  --font-mono:'Geist Mono','SF Mono','JetBrains Mono',Consolas,monospace;
+  /* spacing (8px scale) */
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px;
+  --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px; --space-16:64px; --space-20:80px;
+  /* layout */
+  --max-width:1540px; --content-width:1150px;
+  /* motion */
+  --ease-out:cubic-bezier(.2,.8,.2,1); --duration-fast:120ms; --duration-med:240ms; --duration-slow:400ms;
+  /* elevation — sparse, tinted toward midnight */
+  --shadow-sm:0 1px 2px rgba(26,32,64,.04); --shadow-md:0 4px 12px rgba(26,32,64,.06);
+  --shadow-lg:0 16px 32px rgba(26,32,64,.10); --shadow-xl:0 24px 48px rgba(26,32,64,.18);
+}
+/* accent re-theming: add .accent-green / .accent-amber / .accent-red to a subtree */
+.accent-blue {--accent:var(--blue);--accent-strong:var(--blue-dark);}
+.accent-green{--accent:var(--green-deep);--accent-strong:var(--green-deep);}
+.accent-amber{--accent:var(--amber-text);--accent-strong:var(--amber-text);}
+.accent-red  {--accent:var(--red);--accent-strong:var(--red);}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans);background:var(--snow);color:var(--midnight);line-height:1.55;-webkit-font-smoothing:antialiased}
+::selection{background:var(--midnight);color:var(--snow)}
+a{color:var(--blue);text-decoration:none}
+.mono{font-family:var(--font-mono)}
+
+/* ── CANONICAL: numbered section with rule (number + filling hairline, one row) ──
+   The rule is PART of the heading — it can never visually detach or misalign.
+   <div class="section-label"><span class="section-label-num">01</span>
+     <span class="section-label-text">Overview</span><span class="section-label-line"></span></div> */
+.section-label{display:flex;align-items:center;gap:14px;font-family:var(--font-mono);
+  font-size:11px;text-transform:uppercase;letter-spacing:.16em;color:var(--steel)}
+.section-label-num{color:var(--blue);font-weight:600}
+.section-label-text{color:var(--midnight);font-weight:600}
+.section-label-line{flex:1;height:1px;background:var(--silver)}
+
+/* ── divider atom (for inline rules; NEVER a full-bleed grid behind content) ── */
+.divider{border:none;border-top:1px solid var(--silver)}
+
+/* ── dot-grid texture — CONTAINED elements only, not the page background ── */
+.dot-grid{background-image:radial-gradient(circle,var(--ash) 1px,transparent 1px);background-size:16px 16px}
+
+/* ── reduced motion ── */
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
