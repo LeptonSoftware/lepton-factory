@@ -1,5 +1,7 @@
-import importlib.util, pathlib, subprocess, sys, json
+import pathlib, shutil, subprocess, sys
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+PLUGIN_SCRIPT = ROOT / "scripts" / "sync-from-source.py"
 
 def _fake_src(tmp):
     for rel in ["docs/architecture/containers/TEMPLATE.md",
@@ -20,25 +22,23 @@ def _fake_src(tmp):
     (tmp / "tools/agent").mkdir(parents=True); (tmp/"tools/agent/z").write_text("#!/bin/sh\n")
     return tmp
 
+def _temp_plugin(tmp):
+    # Throwaway plugin tree: sync-from-source derives its plugin root from
+    # __file__, so running a copy of the script here materializes into this
+    # temp tree — the real repo is only read, never mutated (no git clean).
+    plugin = tmp / "plugin"
+    (plugin / "scripts").mkdir(parents=True)
+    shutil.copy2(PLUGIN_SCRIPT, plugin / "scripts" / "sync-from-source.py")
+    for d in ("skills", "hooks", "factory"):
+        (plugin / d).mkdir()
+    return plugin
+
 def test_sync_materializes_docs_skeleton(tmp_path):
     src = _fake_src(tmp_path / "src")
-    try:
-        subprocess.run([sys.executable, str(ROOT/"scripts/sync-from-source.py"),
-                        "--source", str(src)], cwd=ROOT, check=True)
-        ds = ROOT / "factory/docs-skeleton"
-        assert (ds/"architecture/containers/TEMPLATE.md").is_file()
-        assert (ds/"product/features/README.md").is_file()
-        assert (ds/"domain/glossary.md").is_file()
-    finally:
-        # restore the real plugin state via git so this test doesn't leave
-        # the working tree dirty with fixture content (matches tests/test_sync.py)
-        subprocess.run(
-            ["git", "checkout", "--", "skills", "hooks", "factory"],
-            cwd=ROOT,
-            check=False,
-        )
-        subprocess.run(
-            ["git", "clean", "-fd", "skills", "hooks", "factory"],
-            cwd=ROOT,
-            check=False,
-        )
+    plugin = _temp_plugin(tmp_path)
+    subprocess.run([sys.executable, str(plugin / "scripts" / "sync-from-source.py"),
+                    "--source", str(src)], cwd=str(plugin), check=True)
+    ds = plugin / "factory/docs-skeleton"
+    assert (ds/"architecture/containers/TEMPLATE.md").is_file()
+    assert (ds/"product/features/README.md").is_file()
+    assert (ds/"domain/glossary.md").is_file()
