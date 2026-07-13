@@ -68,8 +68,9 @@ def render_frd(seed: dict, date: str) -> tuple:
         parts.append(f"## {rid} — {r['statement']}\n")
         parts.append("Acceptance criteria:\n")
         for j, ac in enumerate(r["acs"], start=1):
-            parts.append(f"- {rid.replace('REQ','AC')}.{j} {ac}")
+            acid = f"AC-{area}-{int(r['id_seq']):03d}.{j}"
+            parts.append(f"- {acid} {ac}")
         parts.append("")
     body = "\n".join(parts)
     dst_rel = f"docs/product/features/{f['slug']}/requirements.md"
-    return dst_rel, f"{frontmatter(front)}\n# {f['title']}\n\n{body.rstrip()}\n"
+    return dst_rel, build_doc(front, f["title"], body)

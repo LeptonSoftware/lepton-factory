@@ -61,3 +61,9 @@ def test_render_frd_ids_match_grammar():
     assert re.search(r"REQ-CORE-001\b", content)
     assert re.search(r"AC-CORE-001\.1\b", content)
     assert "User Story" in content
+
+def test_ac_id_area_not_corrupted_by_replace():
+    s = _ok(); s["area"] = "FREQ"          # contains 'REQ' — must NOT become 'FAC'
+    _, content = seed.render_frd(s, "2026-07-13")
+    assert "AC-FREQ-001.1" in content
+    assert "AC-FAC" not in content
