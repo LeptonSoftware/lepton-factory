@@ -7,3 +7,8 @@ def test_command_invokes_script_via_plugin_root():
     assert "--target" in txt and "$(pwd)" in txt
     assert "--upgrade" in txt          # documents upgrade path
     assert txt.lstrip().startswith("---")   # frontmatter present
+
+def test_command_is_a_wizard():
+    t = (ROOT/"commands/factory-init.md").read_text()
+    for token in ["clarify-intent","tier","stack","--seed","WO-0001","one question at a time"]:
+        assert token in t, token
