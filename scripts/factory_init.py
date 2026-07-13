@@ -1,9 +1,9 @@
-"""Bootstrap/upgrade the Vinxi factory harness in a target repo. Stdlib only."""
+"""Bootstrap/upgrade the Lepton factory harness in a target repo. Stdlib only."""
 from __future__ import annotations
 import argparse, hashlib, json, pathlib, re, shutil, sys
 
 BANNER_LINES = [
-    "MANAGED BY vinxi-factory — do not hand-edit.",
+    "MANAGED BY lepton-factory — do not hand-edit.",
     "Run /factory-init --upgrade to update.",
     "To diverge, add a shadowing file under .factory/overrides/.",
 ]
@@ -95,12 +95,12 @@ def install_config(payload_root, target_root) -> bool:
     dst.write_text((payload_root / "config.yaml").read_text(encoding="utf-8"), encoding="utf-8")
     return True
 
-MARK_START = "<!-- vinxi-factory:managed:start -->"
-MARK_END = "<!-- vinxi-factory:managed:end -->"
+MARK_START = "<!-- lepton-factory:managed:start -->"
+MARK_END = "<!-- lepton-factory:managed:end -->"
 
 ROUTER_BLOCK = """# AGENTS.md — Router
 
-This repository runs the **Vinxi software factory**. All delivery work runs
+This repository runs the **Lepton software factory**. All delivery work runs
 through a Work Order under `.factory/work-orders/`. Pure `docs/` edits are exempt.
 
 - Author new work: invoke the `wo-author` skill.
@@ -145,7 +145,7 @@ def run(target_root, payload_root, *, upgrade: bool) -> dict:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="factory-init",
-        description="Bootstrap or upgrade the Vinxi factory harness in a repo.")
+        description="Bootstrap or upgrade the Lepton factory harness in a repo.")
     ap.add_argument("--target", default=".")
     ap.add_argument("--payload", default=str(default_payload_root()))
     ap.add_argument("--upgrade", action="store_true")

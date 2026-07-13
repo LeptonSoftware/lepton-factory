@@ -1,8 +1,8 @@
 ---
-description: Bootstrap or upgrade the Vinxi factory harness in the current repo
+description: Bootstrap or upgrade the Lepton factory harness in the current repo
 ---
 
-Bootstrap (or, with `--upgrade`, update) the Vinxi factory harness in the user's
+Bootstrap (or, with `--upgrade`, update) the Lepton factory harness in the user's
 current repository.
 
 Run this command with the Bash tool from the repository root:

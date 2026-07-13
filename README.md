@@ -1,13 +1,13 @@
-# vinxi-factory
+# lepton-factory
 
-The Vinxi software-factory harness as a Claude Code plugin: Work-Order lifecycle
+The Lepton software-factory harness as a Claude Code plugin: Work-Order lifecycle
 skills, governance policies, artifact templates, and deterministic tools.
 
 ## Install
 
 ```
-/plugin marketplace add LeptonSoftware/vinxi-factory
-/plugin install vinxi-factory@vinxi-factory
+/plugin marketplace add LeptonSoftware/lepton-factory
+/plugin install lepton-factory@lepton-factory
 ```
 
 Then, in any repo you want to run the factory in:
@@ -22,7 +22,7 @@ This copies the harness into your repo (`.factory/`, `tools/agent/`) and writes
 ## Update
 
 ```
-/plugin update vinxi-factory
+/plugin update lepton-factory
 /factory-init --upgrade
 ```
 
