@@ -27,3 +27,20 @@ def validate_seed(seed: dict) -> list:
 
 def load_seed(path) -> dict:
     return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+
+FM_ORDER = ["title", "summary", "owners", "applies_to", "status", "last_verified"]
+
+def _fm_val(v):
+    if isinstance(v, list):
+        return "[" + ", ".join(str(x) for x in v) + "]"
+    return str(v)
+
+def frontmatter(d: dict) -> str:
+    lines = [f"{k}: {_fm_val(d[k])}" for k in FM_ORDER if k in d]
+    return "---\n" + "\n".join(lines) + "\n---\n"
+
+def build_doc(front: dict, heading: str, body: str) -> str:
+    return f"{frontmatter(front)}\n# {heading}\n\n{body.rstrip()}\n"
+
+def load_profile(factory_root, stack: str) -> dict:
+    return json.loads((pathlib.Path(factory_root)/"profiles"/stack/"profile.json").read_text(encoding="utf-8"))
