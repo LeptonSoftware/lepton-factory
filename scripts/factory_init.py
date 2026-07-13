@@ -184,6 +184,25 @@ def _write_if_absent(target_root, dst_rel, content, human_owned):
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(content, encoding="utf-8"); return dst_rel
 
+BLUEPRINTS_KEY_RE = re.compile(r"^blueprints:\s*$", re.MULTILINE)
+
+def mirror_blueprint_into_config(text: str, bpid: str, meta: dict) -> str:
+    """Insert a `  {bpid}:` entry UNDER the existing top-level `blueprints:` key
+    (or create that key if absent), never as a second top-level `blueprints:`
+    block — duplicate top-level keys resolve last-write-wins in this repo's YAML
+    parser, which would silently drop every pre-existing blueprint entry."""
+    entry_lines = [f"  {bpid}:", f"    applies_to: {meta['applies_to']}", f"    owner: {meta['owner']}"]
+    if re.search(rf"^  {re.escape(bpid)}:\s*$", text, re.MULTILINE):
+        return text                                 # already present
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if BLUEPRINTS_KEY_RE.match(line):
+            new_lines = lines[:i + 1] + entry_lines + lines[i + 1:]
+            return "\n".join(new_lines) + "\n"
+    sep = [""] if lines else []
+    new_lines = lines + sep + ["blueprints:"] + entry_lines
+    return "\n".join(new_lines) + "\n"
+
 def apply_seed(seed, target_root, date, factory_root=None) -> list:
     s = _seedmod(); factory_root = factory_root or (pathlib.Path(target_root)/".factory")
     written = []
@@ -193,13 +212,14 @@ def apply_seed(seed, target_root, date, factory_root=None) -> list:
     for dst, content in s.render_overview(seed):
         written.append(_write_if_absent(target_root, dst, content, True))
     dst, content = s.render_glossary(seed); written.append(_write_if_absent(target_root, dst, content, True))
-    # mirror blueprint into config.yaml blueprints:
+    # mirror blueprint into config.yaml blueprints: (in place — see
+    # mirror_blueprint_into_config for why we never append a new top-level key)
     bpid, meta = s.config_blueprint_line(seed, factory_root)
     cfg = pathlib.Path(target_root)/".factory/config.yaml"
     text = cfg.read_text(encoding="utf-8")
-    if bpid not in text:
-        text += f"\n# added by /factory-init\nblueprints:\n  {bpid}:\n    applies_to: {meta['applies_to']}\n    owner: {meta['owner']}\n"
-        cfg.write_text(text, encoding="utf-8")
+    new_text = mirror_blueprint_into_config(text, bpid, meta)
+    if new_text != text:
+        cfg.write_text(new_text, encoding="utf-8")
     return [w for w in written if w]
 
 def validator_gate(target_root) -> tuple:
@@ -207,22 +227,50 @@ def validator_gate(target_root) -> tuple:
     out = []
     for cmd in (["generate-indexes"], ["check-traceability"], ["validate-work-order", "--all"]):
         r = _sp.run(["python3", str(tools/cmd[0]), *cmd[1:]], cwd=target_root,
-                    capture_output=True, text=True)
+                    capture_output=True, text=True, encoding="utf-8")
         out.append(f"$ {cmd[0]} {' '.join(cmd[1:])}\n{r.stdout}{r.stderr}")
         if r.returncode != 0:
             return r.returncode, "\n".join(out)
     return 0, "\n".join(out)
+
+SECTION_HEADING_RE = re.compile(r"^## .*$", re.MULTILINE)
+
+def fill_section(md: str, heading: str, body_text: str) -> str:
+    """Replace the content between a `## {heading}` line and the next `## `
+    heading (or EOF) with body_text. Never appends a new heading — the section
+    must already exist in the document (work-order.md's template already ships
+    every section a freshly-authored WO needs); raises if it is absent so a
+    caller can't silently corrupt the artifact's structure by re-adding a
+    heading in the wrong place."""
+    target = f"## {heading}"
+    start = None
+    for m in SECTION_HEADING_RE.finditer(md):
+        if m.group(0).strip() == target:
+            start = m.end()
+            break
+    if start is None:
+        raise ValueError(f"fill_section: heading '{target}' not found in document")
+    next_m = SECTION_HEADING_RE.search(md, start)
+    end = next_m.start() if next_m else len(md)
+    filled = f"\n\n{body_text.rstrip()}\n\n"
+    return md[:start] + filled + md[end:]
 
 def author_wo1(seed, target_root, date) -> None:
     tools = pathlib.Path(target_root)/"tools/agent"; s = seed
     _sp.run(["python3", str(tools/"init-work-order"), "--wo", "WO-0001",
              "--title", s["feature"]["title"]], cwd=target_root, check=True)
     wo = pathlib.Path(target_root)/".factory/work-orders/WO-0001/work-order.md"
-    if wo.exists():
-        area = s["area"]
-        wo.write_text(wo.read_text(encoding="utf-8") +
-            f"\n\n## Requirements and Blueprints\n- REQ-{area}-001\n- BP-CONT-{s['container']['name']}\n"
-            f"\n## Decision classification\n- HITL: (none)\n- AFK: all\n", encoding="utf-8")
+    if not wo.exists():
+        return
+    area = s["area"]
+    reqs_body = "\n".join(f"- REQ-{area}-{int(r['id_seq']):03d}" for r in s["feature"]["reqs"])
+    bp_body = f"- BP-CONT-{s['container']['name']}"
+    decision_body = "- HITL decisions: (none)\n- AFK: all other execution decisions"
+    md = wo.read_text(encoding="utf-8")
+    md = fill_section(md, "Requirements", reqs_body)
+    md = fill_section(md, "Blueprints", bp_body)
+    md = fill_section(md, "Decision classification", decision_body)
+    wo.write_text(md, encoding="utf-8")
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="factory-init",
