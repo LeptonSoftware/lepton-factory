@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf 'Re-read AGENTS.md — it routes this repository (skills, docs, tools, policies). If mid-Work-Order, resume from .factory/work-orders/<WO>/state.yaml: it names the phase and next_action. Never reconstruct execution position from conversation memory.\\n'"
+            "command": "printf 'Re-read AGENTS.md \u2014 it routes this repository (skills, docs, tools, policies). If mid-Work-Order, resume from .factory/work-orders/<WO>/state.yaml: it names the phase and next_action. Never reconstruct execution position from conversation memory.\\n'"
           }
         ]
       }
