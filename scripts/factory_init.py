@@ -191,7 +191,7 @@ def mirror_blueprint_into_config(text: str, bpid: str, meta: dict) -> str:
     (or create that key if absent), never as a second top-level `blueprints:`
     block — duplicate top-level keys resolve last-write-wins in this repo's YAML
     parser, which would silently drop every pre-existing blueprint entry."""
-    entry_lines = [f"  {bpid}:", f"    applies_to: {meta['applies_to']}", f"    owner: {meta['owner']}"]
+    entry_lines = [f"  {bpid}:", "    paths:"] + [f"      - {p}" for p in meta["paths"]] + [f"    owner: {meta['owner']}"]
     if re.search(rf"^  {re.escape(bpid)}:\s*$", text, re.MULTILINE):
         return text                                 # already present
     lines = text.splitlines()

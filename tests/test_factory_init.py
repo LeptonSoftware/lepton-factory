@@ -159,7 +159,11 @@ def test_apply_seed_writes_kebab_artifacts(tmp_path):
     written = fi.apply_seed(s, target, "2026-07-13")
     assert (target/"docs/architecture/containers/app.md").is_file()
     assert (target/"docs/product/features/greeting-cli/requirements.md").is_file()
-    assert "BP-CONT-APP" in (target/".factory/config.yaml").read_text()
+    cfg_text = (target/".factory/config.yaml").read_text()
+    assert "BP-CONT-APP" in cfg_text
+    # config mirror uses the real `paths:` list convention (matches check-drift's
+    # spec.get("paths") — NOT the doc front-matter's `applies_to:` key).
+    assert "    paths:\n      - apps/app/**\n" in cfg_text
 
 def test_apply_seed_preserves_existing_blueprints_entries(tmp_path):
     # Regression: apply_seed used to append a NEW top-level `blueprints:` block.
@@ -180,18 +184,21 @@ def test_apply_seed_preserves_existing_blueprints_entries(tmp_path):
     assert "BP-CONT-EXISTING" in text
     assert "BP-CONT-APP" in text
     assert len(re.findall(r"^blueprints:\s*$", text, re.MULTILINE)) == 1
+    # seeded entry uses the real `paths:` list convention
+    assert "    paths:\n      - apps/app/**\n" in text
 
 def test_mirror_blueprint_into_config_creates_key_when_absent():
     text = fi.mirror_blueprint_into_config("version: 1\n", "BP-CONT-APP",
-                                           {"applies_to": ["apps/app/**"], "owner": "o"})
+                                           {"paths": ["apps/app/**"], "owner": "o"})
     assert text.count("blueprints:") == 1
     assert "BP-CONT-APP" in text
+    assert "    paths:\n      - apps/app/**\n" in text
 
 def test_mirror_blueprint_into_config_idempotent():
     text = fi.mirror_blueprint_into_config("blueprints:\n", "BP-CONT-APP",
-                                           {"applies_to": ["a/**"], "owner": "o"})
+                                           {"paths": ["a/**"], "owner": "o"})
     twice = fi.mirror_blueprint_into_config(text, "BP-CONT-APP",
-                                            {"applies_to": ["a/**"], "owner": "o"})
+                                            {"paths": ["a/**"], "owner": "o"})
     assert twice == text
 
 def test_fill_section_replaces_content_keeps_order():

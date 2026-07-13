@@ -45,7 +45,7 @@ def test_render_container(tmp_path):
     assert "# BP-CONT-APP: App" in content
     assert "applies_to: [apps/app/**]" in content
     bpid, meta = seed.config_blueprint_line(_ok(), ROOT/"factory")
-    assert bpid == "BP-CONT-APP" and meta["applies_to"] == ["apps/app/**"]
+    assert bpid == "BP-CONT-APP" and meta["paths"] == ["apps/app/**"]
 
 def test_owner_defaults_consistent_when_omitted():
     s = _ok(); del s["container"]["owner"]      # node stack -> profile owner_default "app-line"

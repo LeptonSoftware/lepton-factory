@@ -56,7 +56,7 @@ def render_container(seed: dict, date: str, factory_root) -> tuple:
 def config_blueprint_line(seed: dict, factory_root) -> tuple:
     c = seed["container"]
     owner = c.get("owner") or load_profile(factory_root, seed["stack"])["owner_default"]
-    return f"BP-CONT-{c['name']}", {"applies_to": c["applies_to"], "owner": owner}
+    return f"BP-CONT-{c['name']}", {"paths": c["applies_to"], "owner": owner}
 
 def render_frd(seed: dict, date: str) -> tuple:
     f = seed["feature"]; area = seed["area"]
